@@ -1,100 +1,150 @@
-#  Study You To Death
+# Library Escape
 
-A 2D stealth arcade game built from scratch using SDL2 in C++. Sneak through a haunted library, avoid patrolling students, collect notes, and escape before time runs out!
+`Library Escape` 現在是完整的 Python 版 2D 潛行遊戲與 RL 訓練平台。原本 repo 內的 C++/SDL2 程式保留作為歷史參考，但目前的主要遊戲、環境封裝、訓練腳本與測試都已經改到 `library_escape/` 這套 Python 架構。
 
-![C++](https://img.shields.io/badge/C++-17-blue.svg)
-![SDL2](https://img.shields.io/badge/SDL2-2.30.7-green.svg)
-![CMake](https://img.shields.io/badge/CMake-Build-red.svg)
+更完整的中文實作說明請看：
 
-##  Screenshots
+- `docs/DETAILED_IMPLEMENTATION_GUIDE.md`
+- `docs/OPERATION_GUIDE.md`
 
-### Main Menu
-![Main Menu](imgs/screenshot_menu.png)
+## 這次完成了什麼
 
-### Gameplay
-![Gameplay](imgs/screenshot_gameplay.png)
+- 整個遊戲主體改成 Python，採用 `Pygame-CE`
+- 遊戲更新改成「固定步長物理 + 可變渲染」，玩家與敵人都是連續移動
+- 單智能體 RL 環境：`Gymnasium`
+- 雙智能體 RL 環境：`PettingZoo ParallelEnv`
+- PPO 訓練：`Stable-Baselines3`
+- 人類 vs AI、AI vs AI、self-play 交替訓練都可跑
+- reward 完全外部化到 YAML
+- observation / action 配置集中化，方便調實驗
+- 補了環境 API 測試、幾何測試與 headless smoke 路徑
 
-##  Features
+## 專案結構
 
-- **Custom Game Engine** - Built from scratch with proper game loop architecture
-- **Stealth Mechanics** - Avoid enemy field of view (cone detection system)
-- **Multiple Game States** - Menu, Settings, and Gameplay screens with smooth transitions
-- **Enemy AI** - Patrolling students with directional vision cones
-- **Collision Detection** - Physics-based collision system for obstacles (tables, bookshelves)
-- **Character Controller** - Smooth 2D character movement with sprite animations
-- **Timer & Score System** - Race against the clock to maximize your score
-- **Audio System** - Background music and sound effects using SDL2_mixer
-- **UI System** - Custom rendered menus and HUD using SDL2_ttf
+```text
+library_escape/
+├── core/             # 純遊戲邏輯：世界、碰撞、視野錐、導航
+├── render/           # Pygame renderer 與 headless null view
+├── input/            # 人類鍵盤輸入
+├── env/              # Gymnasium / PettingZoo 封裝
+├── rewards/          # Reward engine
+├── agents/           # Rule-based / PPO controller
+├── train/            # 訓練入口
+├── play/             # 遊玩入口
+└── scripts/          # ELO / 錄影工具
 
-##  Tech Stack
-
-| Technology | Purpose |
-|------------|---------|
-| C++17 | Core programming language |
-| SDL2 | Window management & rendering |
-| SDL2_image | Texture loading (PNG, JPG) |
-| SDL2_ttf | Font rendering |
-| SDL2_mixer | Audio playback |
-| CMake | Cross-platform build system |
-
-##  Project Structure
-
-```
- main.cpp           # Entry point with game loop
- src/
-    engine.cpp     # Core engine (init, update, render, cleanup)
-    character.cpp  # Player controller and animations
-    playground.cpp # Main gameplay logic
-    menu.cpp       # Main menu implementation
-    settings.cpp   # Settings page
-    enemy.cpp      # Enemy AI with vision cone detection
-    collectible.cpp# Collectible notes logic
-    obstacle.cpp   # Tables & bookshelves collision
- include/           # Header files
- imgs/              # Game textures and sprites
- fonts/             # TTF font files
- SDL_lib/           # SDL2 library files
+configs/
+├── env.yaml          # 地圖、障礙、物理、obs/action 主要設定
+├── rewards.yaml      # reward 權重
+└── training.yaml     # PPO/self-play 超參數
 ```
 
-##  Building & Running
+## 安裝
 
-### Prerequisites
-- CMake 3.10+
-- SDL2, SDL2_image, SDL2_ttf, SDL2_mixer
-
-### Build
-```bash
-mkdir build && cd build
-cmake ..
-make
-./my_Final_project_game
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .[dev]
 ```
 
-##  Controls
+## 直接遊玩
 
-| Key | Action |
-|-----|--------|
-| W/ | Move Up |
-| S/ | Move Down |
-| A/ | Move Left |
-| D/ | Move Right |
-| ESC | Pause/Menu |
+人類對 AI 敵人：
 
-##  Gameplay
+```powershell
+python -m library_escape.play.human_vs_ai
+```
 
-- **Objective**: Collect all the notes scattered around the library
-- **Avoid**: Patrolling students with flashlight vision cones
-- **Timer**: Complete the level before time runs out
-- **Score**: Collect notes to increase your score
+如果你已經有訓練好的敵人模型：
 
-##  Project Highlights
+```powershell
+python -m library_escape.play.human_vs_ai --enemy-model models\enemy\enemy_ppo.zip
+```
 
-- **Game Engine Architecture** - Implemented a complete game loop with delta time for frame-rate independent movement
-- **Stealth AI System** - Designed field of view (FOV) cone detection for realistic stealth mechanics
-- **Modular OOP Design** - Structured codebase with separate classes for characters, enemies, obstacles, and collectibles
-- **Resource Management** - Efficient texture loading, font rendering, and audio playback with proper cleanup
-- **Cross-Platform Build** - CMake configuration supporting Windows, macOS, and Linux
+AI 對 AI：
 
-##  License
+```powershell
+python -m library_escape.play.ai_vs_ai
+```
 
-MIT License - Feel free to use this code for learning purposes!
+## 強化學習訓練
+
+訓練敵人 PPO：
+
+```powershell
+python -m library_escape.train.train_enemy
+```
+
+交替 self-play：
+
+```powershell
+python -m library_escape.train.train_selfplay
+```
+
+ELO 粗估：
+
+```powershell
+python -m library_escape.scripts.eval_elo --episodes 20
+```
+
+錄影成 PNG frame sequence：
+
+```powershell
+python -m library_escape.scripts.record_video --output-dir recordings\demo_frames
+```
+
+## 你要調哪裡
+
+Reward 權重：
+
+- `configs/rewards.yaml`
+- 例如 `enemy.catch_player`、`player.collect_note`、`player.seen_per_step`
+
+Observation space 組成：
+
+- `configs/env.yaml` 的 `observations:` 區塊
+- 例如 `wall_ray_count`、`wall_ray_range`、`include_velocity`、`include_heading`
+- 實際向量拼接邏輯在 [library_escape/env/obs_builder.py](library_escape/env/obs_builder.py)
+
+Action space：
+
+- `configs/env.yaml` 的 `actions.scheme`
+- `discrete` = `Discrete(9)`，`continuous` = `Box(2,)`
+- 動作解碼在 [library_escape/core/actions.py](library_escape/core/actions.py)
+
+地圖、障礙、起點、出口、筆記位置：
+
+- `configs/env.yaml` 的 `world:` 區塊
+
+PPO / self-play 超參數：
+
+- `configs/training.yaml`
+- 單智能體看 `single_agent:`
+- 交替 self-play 看 `multi_agent:`
+
+## 測試
+
+```powershell
+pytest
+```
+
+這會檢查：
+
+- 幾何碰撞
+- 視野錐遮擋
+- Gymnasium API
+- PettingZoo Parallel API
+
+## 目前設計取捨
+
+- 多智能體訓練目前採「交替 best-response self-play」而不是直接 MAPPO。原因是這樣更容易維護、也比較穩，對這個 repo 目前的規模更實用。
+- `PettingZoo` 環境已經做好，所以未來要換成 MAPPO、CleanRL 或 RLlib 都有明確接口。
+- 原始 C++ 檔案沒有刪掉，方便和舊版對照；但新的主路徑已經是 Python。
+
+## 主要使用的官方文件
+
+- Gymnasium: https://gymnasium.farama.org/
+- PettingZoo: https://pettingzoo.farama.org/
+- Stable-Baselines3: https://stable-baselines3.readthedocs.io/
+- Pygame-CE: https://pyga.me/docs/

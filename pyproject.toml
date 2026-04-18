@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "library-escape"
+version = "0.1.0"
+description = "Python remake of Library Escape with continuous movement and reinforcement learning support."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.1.0",
+  "pygame-ce>=2.5.0",
+  "PyYAML>=6.0.2",
+  "gymnasium>=1.1.0",
+  "pettingzoo>=1.24.0",
+  "stable-baselines3>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "tensorboard>=2.19.0",
+]
+
+[project.scripts]
+library-escape-play = "library_escape.play.human_vs_ai:main"
+library-escape-ai-vs-ai = "library_escape.play.ai_vs_ai:main"
+library-escape-train-enemy = "library_escape.train.train_enemy:main"
+library-escape-train-selfplay = "library_escape.train.train_selfplay:main"
+
+[tool.setuptools.packages.find]
+include = ["library_escape*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

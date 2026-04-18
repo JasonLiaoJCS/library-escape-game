@@ -1,0 +1,37 @@
+shared:
+  seed: 42
+  frame_skip: 4
+  deterministic_eval: true
+  device: auto
+
+single_agent:
+  algorithm: ppo
+  role: enemy
+  total_timesteps: 50000
+  n_envs: 2
+  vector_env: dummy
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  n_steps: 512
+  batch_size: 256
+  ent_coef: 0.01
+  clip_range: 0.2
+  vf_coef: 0.5
+  net_arch: [128, 128]
+  checkpoint_dir: models/enemy
+  log_dir: models/logs/enemy
+  opponent_mix:
+    rule_based: 0.75
+    random: 0.25
+
+multi_agent:
+  rounds: 6
+  timesteps_per_round: 20000
+  pool_size: 4
+  player_checkpoint_dir: models/player_pool
+  enemy_checkpoint_dir: models/enemy_pool
+  player_net_arch: [128, 128]
+  enemy_net_arch: [128, 128]
+  symmetric_reward: false
+  reward_shaping: true

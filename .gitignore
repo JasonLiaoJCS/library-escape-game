@@ -32,3 +32,15 @@ desktop.ini
 *.log
 *.swp
 *~
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Training artifacts
+models/**/*.zip
+models/logs/
+recordings/
