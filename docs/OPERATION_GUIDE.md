@@ -607,6 +607,8 @@ GUI 主檔：
 - 開 `AI vs AI`
 - 選 `Collection` 或 `Escape`
 - 指定 `player` / `enemy` checkpoint
+- 選擇固定 seed 或隨機 seed
+- 選擇 deterministic 或 stochastic checkpoint 播放
 - 開啟 replay 錄製
 - 如果 checkpoint 的訓練模式和目前播放的 `Game mode` 不一致，GUI 會先警告
 
@@ -615,6 +617,9 @@ GUI 主檔：
 - `Play` 是手動發射頁
 - 你自己決定載哪個 player checkpoint、哪個 enemy checkpoint、用哪個 `Game mode`
 - 最適合做自由組合對戰、人工驗證、錄 replay
+- `Seed` 現在預設留空；留空代表每次啟動都重新抽隨機 reset
+- `Deterministic checkpoint playback` 現在預設開啟；開啟時 checkpoint 會用 argmax 播放，適合評估、展示、固定重現
+- 如果你想觀察策略多樣性，再手動把 deterministic 關掉
 
 ### 7.2 Train
 
@@ -750,7 +755,54 @@ GUI 主檔：
   - 先選一個訓練 run
   - GUI 幫你自動讀該 run 的 `training_summary.json`
   - 自動帶出該 run 的最終模型與對應 `Game mode`
+  - 預設用 deterministic playback；seed 則保持非固定，讓 reset 仍有隨機性
   - 更適合「我剛 train 完，想直接看這次 run 的最終成果」
+
+### 7.9 為什麼新版 checkpoint 播放不一定每次一樣
+
+這是刻意改的。
+
+之前如果你每次重開都看到完全一樣的路線，通常是因為：
+
+- checkpoint 播放被設成 `deterministic=True`
+- GUI 又把 `seed` 固定死
+
+現在新版改成：
+
+- `Play` 頁的 `Seed` 預設留空
+- `Deterministic checkpoint playback` 預設開啟
+- `Results -> Play AI vs AI` 也不再幫你硬塞固定 seed
+
+因此現在的預設行為是：
+
+- 用 deterministic policy 播放，讓模型每步都選 argmax，適合正式評估
+- 但 seed 仍預設留空，所以不同次啟動仍可能因 reset 隨機化而有不同對局
+
+如果你想要：
+
+- 策略多樣性：seed 留空、deterministic 關閉
+- 穩定評估：seed 留空、deterministic 開啟
+- 完全可重現：填固定 seed、deterministic 開啟
+
+### 7.10 為什麼新版 `Escape` 觀戰比較順
+
+之前播放 checkpoint 的時候，是每個 physics tick 都直接跑一次神經網路推論。
+
+這會有兩個問題：
+
+1. 播放時的決策頻率和訓練時不一致  
+2. `Escape` self-play 模型在觀戰時比較容易卡頓
+
+現在播放端改成：
+
+- 畫面仍然維持連續渲染
+- checkpoint policy 的決策頻率對齊 `rl_frame_skip`
+
+這樣做之後：
+
+- 觀戰更順
+- 播放分布比較接近訓練分布
+- 不會再那麼容易出現一幀一幀、離散式卡頓的觀感
 
 ---
 
@@ -1686,14 +1738,22 @@ collectibles:
 randomization:
   enabled: false
   min_agent_spawn_distance: 8.0
-  player_speed_scale_range: [0.95, 1.05]
-  enemy_speed_scale_range: [0.95, 1.08]
-  vision_range_scale_range: [0.92, 1.08]
-  vision_angle_jitter_deg: 8.0
+  player_speed_scale_range: [0.93, 1.07]
+  enemy_speed_scale_range: [0.93, 1.10]
+  vision_range_scale_range: [0.88, 1.12]
+  vision_angle_jitter_deg: 10.0
   support_count_range: [2, 4]
 ```
 
-這塊是為了訓練泛化能力。
+這塊就是 `domain randomization`。
+
+意思是：
+
+- 訓練時不要永遠只在一個固定世界裡背板
+- 而是每局從一個參數分布中重新抽樣
+- 讓 policy 學到的是「在一整段環境變動範圍內都能 work 的策略」
+
+這塊是為了訓練泛化能力，也是強化學習實作裡很常見的做法。
 
 你可以讓每局：
 
@@ -1702,6 +1762,8 @@ randomization:
 - 移速輕微變動
 - 視野距離與角度輕微變動
 - 支援敵人數量輕微變動
+
+這個專案的訓練 preset 也會在 `fast / balanced / quality` 對兩個 `Game mode` 分別開不同程度的 randomization，所以 `Escape` 和 `Collection` 不會永遠只練同一個開局。
 
 ### 12.8 ui
 
@@ -2117,6 +2179,15 @@ python -m library_escape.train.train_selfplay --game-mode collection --preset ba
 
 - smoke test：先 `fast`
 - 正式跑：再用 `balanced`
+- 長時間徹夜跑：用 `overnight`
+
+`overnight` preset 的設計目標是：
+
+- 給中端機長時間 self-play 用
+- opponent pool 比 `balanced` 更大
+- latest / historical 對手比例更接近 league 訓練
+- 支援敵人數量 randomization 更強
+- entropy 會隨訓練逐步下降，前期保留探索、後期收斂成更穩定的競技策略
 
 ### 19.3 `learning_rate`
 

@@ -17,6 +17,10 @@ class StepEvents:
     enemy_wall_hits: int = 0
     distance_delta: float = 0.0
     primary_distance_delta: float = 0.0
+    player_path_length: float = 0.0
+    primary_enemy_path_length: float = 0.0
+    player_net_displacement: float = 0.0
+    primary_enemy_net_displacement: float = 0.0
     collected: Counter[str] = field(default_factory=Counter)
     objective_completed: bool = False
     player_caught: bool = False
@@ -35,6 +39,10 @@ class StepEvents:
         self.enemy_wall_hits += other.enemy_wall_hits
         self.distance_delta += other.distance_delta
         self.primary_distance_delta += other.primary_distance_delta
+        self.player_path_length += other.player_path_length
+        self.primary_enemy_path_length += other.primary_enemy_path_length
+        self.player_net_displacement += other.player_net_displacement
+        self.primary_enemy_net_displacement += other.primary_enemy_net_displacement
         self.collected.update(other.collected)
         self.objective_completed = self.objective_completed or other.objective_completed
         self.player_caught = self.player_caught or other.player_caught

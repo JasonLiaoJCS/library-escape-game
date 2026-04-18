@@ -388,7 +388,14 @@ python -m library_escape.gui.app
 - 選 `Human vs AI` 或 `AI vs AI`
 - 選 `Collection` 或 `Escape`
 - 載入玩家 / 敵人 checkpoint
+- `Seed` 留空做隨機播放，或填固定 seed 做可重現播放
+- 切換 deterministic / stochastic checkpoint 播放
 - 啟動遊戲
+
+補充：
+
+- 現在 checkpoint 播放預設是 deterministic policy，適合評估、展示、固定重現
+- 如果你想觀察策略多樣性，才把 seed 留空並切到 stochastic playback
 
 ### Train 頁
 
@@ -568,6 +575,21 @@ python -c "import sys; print(sys.executable)"
 
 不是。  
 如果沒有載入 checkpoint，會改用內建 rule-based baseline，不是未訓練神經網路。
+
+### Q5. 什麼是 domain randomization？這個專案有在用嗎？
+
+有。  
+這個專案在訓練 preset 裡會開 `domain randomization`，也就是每局對出生點、移速、視野範圍 / 角度、支援敵人數量做隨機擾動，避免 policy 只會背固定開局。
+
+主要位置：
+
+- [`configs/env.yaml`](./configs/env.yaml)
+- [`configs/training.yaml`](./configs/training.yaml)
+
+### Q6. 為什麼新版 checkpoint 觀戰比較順？
+
+因為現在播放端不再每個 physics tick 都重新跑一次神經網路推論，而是把 policy 決策頻率對齊訓練時的 `rl_frame_skip`。  
+畫面仍然是連續渲染，但推論負載更合理，所以 `Escape` 模式觀戰會比以前順很多。
 
 ---
 

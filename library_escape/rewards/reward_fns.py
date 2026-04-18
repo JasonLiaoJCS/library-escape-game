@@ -39,6 +39,8 @@ class RewardEngine:
         visible_enemy_ratio = float(events.visible_enemy_count) / max(1.0, float(world.rl_frame_skip) * enemy_count)
         score_progress = float(next_metrics.get("score_progress", next_metrics.get("objective_progress", 0.0)))
         score_denial = 1.0 - score_progress
+        stationary_threshold = max(0.0, float(anti_exploit_cfg.get("stationary_threshold", 0.0)))
+        idle_threshold = stationary_threshold * 0.75 if stationary_threshold > 0.0 else 0.0
 
         enemy_reward = 0.0
         enemy_reward += primary_visibility * float(enemy_cfg.get("primary_visible_per_step", 0.0))
@@ -50,7 +52,12 @@ class RewardEngine:
         enemy_reward += (events.count("coffee") + events.count("freeze")) * float(enemy_cfg.get("player_collect_powerup_penalty", 0.0))
         enemy_reward += events.enemy_wall_hits * float(enemy_cfg.get("wall_penalty", 0.0))
         enemy_reward += float(enemy_cfg.get("time_penalty", 0.0))
-        if abs(world.enemy.velocity_x) <= 1e-6 and abs(world.enemy.velocity_y) <= 1e-6:
+        if (
+            idle_threshold > 0.0
+            and float(events.primary_enemy_net_displacement) < idle_threshold
+            and world.enemy_pause_fraction(world.enemy) <= 1e-6
+            and not self._enemy_guarding_exit(world, next_metrics)
+        ):
             enemy_reward += float(enemy_cfg.get("idle_penalty", 0.0))
         if events.player_caught:
             enemy_reward += float(enemy_cfg.get("catch_player", 0.0))
@@ -82,7 +89,7 @@ class RewardEngine:
         player_reward += visible_enemy_ratio * float(player_cfg.get("multi_seen_penalty_per_step", 0.0))
         player_reward += events.player_wall_hits * float(player_cfg.get("wall_penalty", 0.0))
         player_reward += float(player_cfg.get("time_penalty", 0.0))
-        if abs(world.player.velocity_x) <= 1e-6 and abs(world.player.velocity_y) <= 1e-6:
+        if idle_threshold > 0.0 and float(events.player_net_displacement) < idle_threshold and float(next_metrics.get("collection_progress", 0.0)) <= 1e-6:
             player_reward += float(player_cfg.get("idle_penalty", 0.0))
         if events.player_escaped:
             player_reward += float(player_cfg.get("escape", 0.0))
@@ -107,6 +114,35 @@ class RewardEngine:
             penalty = float(anti_exploit_cfg.get("no_progress_penalty", 0.0))
             player_reward += penalty
             enemy_reward += penalty
+
+        player_reward += self._stationary_penalty(
+            role="player",
+            world=world,
+            events=events,
+            next_metrics=next_metrics,
+            anti_exploit_cfg=anti_exploit_cfg,
+        )
+        enemy_reward += self._stationary_penalty(
+            role="enemy",
+            world=world,
+            events=events,
+            next_metrics=next_metrics,
+            anti_exploit_cfg=anti_exploit_cfg,
+        )
+        player_reward += self._oscillation_penalty(
+            role="player",
+            world=world,
+            events=events,
+            next_metrics=next_metrics,
+            anti_exploit_cfg=anti_exploit_cfg,
+        )
+        enemy_reward += self._oscillation_penalty(
+            role="enemy",
+            world=world,
+            events=events,
+            next_metrics=next_metrics,
+            anti_exploit_cfg=anti_exploit_cfg,
+        )
 
         zero_sum_mix = float(global_cfg.get("zero_sum_mix", 0.0))
         if zero_sum_mix > 0.0:
@@ -179,6 +215,76 @@ class RewardEngine:
         if getattr(world, "is_collection_mode", lambda: False)():
             return float(metrics.get("score_progress", metrics.get("objective_progress", 0.0)))
         return float(metrics.get("objective_progress", 0.0))
+
+    def _stationary_penalty(
+        self,
+        *,
+        role: str,
+        world,
+        events,
+        next_metrics: dict[str, Any],
+        anti_exploit_cfg: dict[str, Any],
+    ) -> float:
+        threshold = float(anti_exploit_cfg.get("stationary_threshold", 0.0))
+        if threshold <= 0.0 or not self._quiet_step(role=role, world=world, events=events, next_metrics=next_metrics):
+            return 0.0
+        displacement = (
+            float(events.player_net_displacement)
+            if role == "player"
+            else float(events.primary_enemy_net_displacement)
+        )
+        if displacement >= threshold:
+            return 0.0
+        if role == "enemy" and self._enemy_guarding_exit(world, next_metrics):
+            return 0.0
+        return float(anti_exploit_cfg.get(f"{role}_stationary_penalty", 0.0))
+
+    def _oscillation_penalty(
+        self,
+        *,
+        role: str,
+        world,
+        events,
+        next_metrics: dict[str, Any],
+        anti_exploit_cfg: dict[str, Any],
+    ) -> float:
+        path_threshold = float(anti_exploit_cfg.get("oscillation_path_threshold", 0.0))
+        net_threshold = float(anti_exploit_cfg.get("oscillation_net_threshold", 0.0))
+        if (
+            path_threshold <= 0.0
+            or net_threshold <= 0.0
+            or not self._quiet_step(role=role, world=world, events=events, next_metrics=next_metrics)
+        ):
+            return 0.0
+        path_length = float(events.player_path_length) if role == "player" else float(events.primary_enemy_path_length)
+        net_displacement = (
+            float(events.player_net_displacement)
+            if role == "player"
+            else float(events.primary_enemy_net_displacement)
+        )
+        if role == "enemy" and self._enemy_guarding_exit(world, next_metrics):
+            return 0.0
+        if path_length < path_threshold or net_displacement >= net_threshold:
+            return 0.0
+        return float(anti_exploit_cfg.get(f"{role}_oscillation_penalty", 0.0))
+
+    def _quiet_step(self, *, role: str, world, events, next_metrics: dict[str, Any]) -> bool:
+        if events.player_caught or events.player_escaped or events.objective_completed:
+            return False
+        if events.detection_events > 0 or events.visible_steps > 0:
+            return False
+        if sum(events.collected.values()) > 0:
+            return False
+        if float(next_metrics.get("collection_progress", 0.0)) > 1e-6:
+            return False
+        if role == "enemy" and world.enemy_pause_fraction(world.enemy) > 1e-6:
+            return False
+        return True
+
+    def _enemy_guarding_exit(self, world, next_metrics: dict[str, Any]) -> bool:
+        if float(next_metrics.get("can_escape", 0.0)) <= 0.5:
+            return False
+        return float(next_metrics.get("distance_enemy_to_escape", 999.0)) <= 1.25
 
 
 def compute_rewards(

@@ -20,20 +20,29 @@ class SB3PolicyController:
         model_path: str | Path,
         env_config: dict | None = None,
         deterministic: bool = True,
+        decision_repeat_steps: int = 1,
         obsnorm_path: str | Path | None = None,
     ) -> None:
         self.role = role
         self.env_config = env_config or load_env_config()
         self.obs_builder = ObsBuilder(self.env_config)
         self.deterministic = deterministic
+        self.decision_repeat_steps = max(1, int(decision_repeat_steps))
         self.model_path = resolve_repo_path(model_path)
         self.model, self.uses_action_masks, self.algorithm_name = self._load_model(self.model_path)
         self.obs_normalizer = self._load_obs_normalizer(obsnorm_path)
+        self._repeat_budget = 0
+        self._cached_action = (0.0, 0.0)
 
     def reset(self) -> None:
-        return None
+        self._repeat_budget = 0
+        self._cached_action = (0.0, 0.0)
 
     def act(self, world) -> tuple[float, float]:
+        if self._repeat_budget > 0:
+            self._repeat_budget -= 1
+            return self._cached_action
+
         obs = self.obs_builder.build(world, self.role)
         if self.obs_normalizer is not None:
             obs = self._normalize_obs(obs, self.obs_normalizer)
@@ -42,7 +51,9 @@ class SB3PolicyController:
             action, _ = self.model.predict(obs, deterministic=self.deterministic, action_masks=mask)
         else:
             action, _ = self.model.predict(obs, deterministic=self.deterministic)
-        return action_to_vector(action, self.env_config["action"])
+        self._cached_action = action_to_vector(action, self.env_config["action"])
+        self._repeat_budget = self.decision_repeat_steps - 1
+        return self._cached_action
 
     def _model_metadata_hints(self, path: Path) -> list[str]:
         candidates = [

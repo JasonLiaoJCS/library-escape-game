@@ -21,6 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="videos/frames")
     parser.add_argument("--player-model", type=str, default=None)
     parser.add_argument("--enemy-model", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--deterministic-policy", action="store_true")
     return parser.parse_args()
 
 
@@ -30,15 +32,27 @@ def main() -> None:
     output_dir = resolve_repo_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    world = World(env_config=env_config, seed=0)
+    world = World(env_config=env_config, seed=args.seed)
     renderer = PygameView(world, title="Library Escape Recorder", hidden=True)
     player_controller = (
-        SB3PolicyController("player", args.player_model, env_config=env_config)
+        SB3PolicyController(
+            "player",
+            args.player_model,
+            env_config=env_config,
+            deterministic=args.deterministic_policy,
+            decision_repeat_steps=max(1, int(env_config["timing"]["rl_frame_skip"])),
+        )
         if args.player_model
         else HeuristicPlayerController()
     )
     enemy_controller = (
-        SB3PolicyController("enemy", args.enemy_model, env_config=env_config)
+        SB3PolicyController(
+            "enemy",
+            args.enemy_model,
+            env_config=env_config,
+            deterministic=args.deterministic_policy,
+            decision_repeat_steps=max(1, int(env_config["timing"]["rl_frame_skip"])),
+        )
         if args.enemy_model
         else RuleBasedEnemyController()
     )

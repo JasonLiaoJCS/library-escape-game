@@ -106,7 +106,12 @@ presets:
         enemy_team:
           support_count: 1
         randomization:
-          support_count_range: [1, 1]
+          support_count_range: [1, 2]
+    train_overrides_by_game_mode:
+      collection:
+        ent_coef: 0.018
+      escape:
+        ent_coef: 0.020
   balanced:
     single_agent:
       total_timesteps: 360000
@@ -132,7 +137,12 @@ presets:
         enemy_team:
           support_count: 1
         randomization:
-          support_count_range: [1, 2]
+          support_count_range: [1, 3]
+    train_overrides_by_game_mode:
+      collection:
+        ent_coef: 0.020
+      escape:
+        ent_coef: 0.022
   quality:
     single_agent:
       total_timesteps: 720000
@@ -164,4 +174,71 @@ presets:
         enemy_team:
           support_count: 2
         randomization:
-          support_count_range: [1, 3]
+          support_count_range: [1, 4]
+    train_overrides_by_game_mode:
+      collection:
+        ent_coef: 0.022
+      escape:
+        ent_coef: 0.025
+  overnight:
+    single_agent:
+      total_timesteps: 2000000
+      n_envs: 6
+      n_steps: 1024
+      batch_size: 256
+      eval_freq: 12288
+      checkpoint_freq: 12288
+    self_play:
+      rounds: 12
+      timesteps_per_round: 300000
+      n_envs: 4
+      n_steps: 1024
+      batch_size: 256
+      eval_freq: 12288
+      checkpoint_freq: 12288
+      opponent_pool_size: 20
+      learning_rate_schedule:
+        type: linear
+        start: 0.0002
+        end: 0.00005
+      clip_range_schedule:
+        type: linear
+        start: 0.20
+        end: 0.10
+      ent_coef_schedule:
+        type: linear
+        start: 0.020
+        end: 0.004
+      opponent_curriculum:
+        bootstrap_random_weight: 0.25
+        bootstrap_heuristic_weight: 0.75
+        latest_weight: 0.45
+        historical_weight: 0.55
+        max_history_pool: 20
+    env_overrides:
+      timing:
+        rl_frame_skip: 4
+      randomization:
+        enabled: true
+    env_overrides_by_game_mode:
+      collection:
+        enemy_team:
+          support_count: 4
+        randomization:
+          support_count_range: [3, 4]
+      escape:
+        enemy_team:
+          support_count: 2
+        randomization:
+          support_count_range: [1, 4]
+    train_overrides_by_game_mode:
+      collection:
+        ent_coef_schedule:
+          type: linear
+          start: 0.022
+          end: 0.004
+      escape:
+        ent_coef_schedule:
+          type: linear
+          start: 0.024
+          end: 0.006

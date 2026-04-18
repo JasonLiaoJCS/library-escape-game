@@ -103,6 +103,36 @@ def test_escape_objective_completion_rewards_favor_player():
     assert rewards["enemy_0"] < 0.0
 
 
+def test_antistall_penalties_hit_stationary_and_oscillating_agents():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    metrics = world.transition_metrics()
+
+    stationary_events = StepEvents(
+        progress_made=True,
+        player_net_displacement=0.0,
+        primary_enemy_net_displacement=0.0,
+        player_path_length=0.0,
+        primary_enemy_path_length=0.0,
+    )
+    stationary_rewards = reward_engine.compute(world, stationary_events, prev_metrics=metrics, next_metrics=metrics)
+
+    oscillating_events = StepEvents(
+        progress_made=True,
+        player_net_displacement=0.01,
+        primary_enemy_net_displacement=0.01,
+        player_path_length=0.24,
+        primary_enemy_path_length=0.24,
+    )
+    oscillating_rewards = reward_engine.compute(world, oscillating_events, prev_metrics=metrics, next_metrics=metrics)
+
+    assert stationary_rewards["player_0"] < 0.0
+    assert stationary_rewards["enemy_0"] < 0.0
+    assert oscillating_rewards["player_0"] < stationary_rewards["player_0"]
+    assert oscillating_rewards["enemy_0"] < stationary_rewards["enemy_0"]
+
+
 def test_obs_builder_exposes_mode_flags_and_expanded_dimensions():
     collection_env = build_game_mode_env_config(game_mode="collection", manual_collect_required=False, interactive=False)
     collection_world = World(env_config=collection_env, seed=0)

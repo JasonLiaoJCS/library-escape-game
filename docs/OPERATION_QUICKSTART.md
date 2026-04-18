@@ -490,12 +490,14 @@ python -m library_escape.gui.app
 - `fast`：快速測試
 - `balanced`：一般推薦
 - `quality`：更久、更重、更強
+- `overnight`：專門給長時間 self-play / 長時間單邊訓練的版本，預設已經加大 opponent pool、加強 randomization，並把探索強度隨訓練逐步降下來
 
 新手建議：
 
 1. 先用 `fast`
 2. 確認流程都會跑
 3. 再改 `balanced`
+4. 真正要睡前長跑，再用 `overnight`
 
 ### 8.6 `Algorithm` 要選什麼
 
@@ -785,6 +787,7 @@ checkpoints/selfplay/escape/<run_name>/
   - `collection`
   - `escape`
 - `Seed`
+- `Deterministic checkpoint playback`
 - `Record replay`
 - `Enemy checkpoint`
 - `Player checkpoint`
@@ -803,6 +806,10 @@ checkpoints/selfplay/escape/<run_name>/
 - 你可以任意組合 checkpoint
 - 你可以用不同 run 訓練出來的 player / enemy 直接互打
 - 你也可以一邊載 player checkpoint、一邊讓 enemy 留空，這樣它就會退回 rule-based baseline
+- `Seed` 留空時，每次啟動都會重新抽一個隨機 reset；只有你真的想重現完全同一場，才手動填 seed
+- `Deterministic checkpoint playback` 現在預設是開的
+- 開啟時，checkpoint 每一步都走 argmax 動作，也就是永遠選目前機率最高的動作，這適合評估、展示、固定重現
+- 關閉時，checkpoint 才會改成 stochastic policy 播放，從動作分布中抽樣，用來觀察策略多樣性
 
 #### `Results` 分頁
 
@@ -838,6 +845,7 @@ checkpoints/selfplay/escape/<run_name>/
 
 - 模型是從你選的 run 的 `training_summary.json` 自動帶出來
 - `Game mode` 也是從那個 run 的摘要自動帶出來
+- 預設會用隨機 seed 加 deterministic checkpoint playback
 - 適合：「我剛 train 完一個 run，我現在就想看它到底學成怎樣」
 
 `Play` 分頁手動選 checkpoint：
@@ -884,6 +892,69 @@ checkpoints/selfplay/escape/<run_name>/
 
 - 想看「這個 run 最終成果」：用 `Results`
 - 想自由拼裝對戰：用 `Play`
+
+#### deterministic=True / deterministic=False 到底差在哪裡
+
+這個專案現在採用的是下面這個標準定義：
+
+- `deterministic=False`
+  - 訓練時用
+  - 從動作機率分布中抽樣
+  - 目的是保留探索能力
+  - 例：機率 `[0.6, 0.3, 0.1]`，就有 `60% / 30% / 10%` 機率各選一個
+- `deterministic=True`
+  - 評估 / 展示 / 固定重播時用
+  - 直接取 argmax
+  - 目的是拿到最穩定、最可重現的表現
+  - 例：同樣的分布 `[0.6, 0.3, 0.1]`，永遠選第 `0` 個動作
+
+現在 GUI 的預設是：
+
+- `Play` 頁的 `Seed` 預設留空
+- `Play` 頁的 `Deterministic checkpoint playback` 預設開啟
+- `Results -> Play AI vs AI` 也預設用 deterministic 播放
+- 只有你主動把 deterministic 關掉，才會切回 stochastic
+
+所以現在：
+
+- 想看最穩定、最像正式評估的結果：保持 deterministic 開啟
+- 想看模型的多樣化策略：不要填 seed，並把 deterministic 關掉
+- 想做完全重現的 debug：填固定 seed，保持 deterministic 開啟
+
+#### 什麼是 Domain Randomization，這個專案現在怎麼用
+
+`Domain randomization` 的意思是：訓練時不要永遠在完全一樣的地圖條件、視野、移速、出生點下學習，而是每局都對一部分環境參數做隨機擾動，讓 policy 學到的是「一整個分布」下都能 work 的策略，而不是背板。
+
+這個專案現在在訓練 preset 裡已經會開：
+
+- 玩家 / 敵人出生點隨機化
+- 玩家 / 敵人移速微擾
+- 視野距離微擾
+- 視野角度抖動
+- `Escape` / `Collection` 的支援敵人數量擾動
+
+你會在這些地方改到：
+
+- 基礎範圍：[`configs/env.yaml`](../configs/env.yaml)
+- 不同訓練 preset 何時啟用：[`configs/training.yaml`](../configs/training.yaml)
+
+如果你想要更強泛化、不要每次都背固定開局，優先保持：
+
+- `Preset = balanced` 或 `quality`
+- `randomization.enabled = true`
+
+#### 為什麼 `Escape` 觀戰現在比較順，不會那麼像一幀一幀卡住
+
+新版播放端不再每個 physics tick 都重新跑一次神經網路，而是改成：
+
+- 渲染仍然每幀更新
+- policy 決策頻率則跟訓練時的 `rl_frame_skip` 對齊
+
+這樣做的好處是：
+
+- 播放分布和訓練分布比較一致
+- `Escape` self-play checkpoint 觀戰時比較不容易卡頓
+- 畫面仍然是連續渲染，不是退回舊版那種一跳一跳的離散刷新感
 
 #### `Train` 分頁
 

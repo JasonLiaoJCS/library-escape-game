@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play Library Escape as a human against an AI enemy.")
     parser.add_argument("--enemy-model", type=str, default=None, help="Optional PPO checkpoint to control the enemy.")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--deterministic-policy",
+        action="store_true",
+        help="Use deterministic checkpoint inference. Leave off for stochastic playback variety.",
+    )
     parser.add_argument("--hidden-window", action="store_true", help="Create a hidden window for smoke tests.")
     parser.add_argument("--max-seconds", type=float, default=None, help="Optional wall-clock time limit for automated checks.")
     parser.add_argument("--record-replay", type=str, default=None, help="Optional replay output path (.ler.gz).")
@@ -45,7 +50,13 @@ def main() -> None:
     audio = GameAudioController(world)
     keyboard = KeyboardController()
     enemy_controller = (
-        SB3PolicyController("enemy", args.enemy_model, env_config=env_config)
+        SB3PolicyController(
+            "enemy",
+            args.enemy_model,
+            env_config=env_config,
+            deterministic=args.deterministic_policy,
+            decision_repeat_steps=max(1, int(env_config["timing"]["rl_frame_skip"])),
+        )
         if args.enemy_model
         else RuleBasedEnemyController()
     )

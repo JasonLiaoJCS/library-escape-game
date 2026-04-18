@@ -22,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--player-model", type=str, default=None, help="Optional PPO checkpoint for the player.")
     parser.add_argument("--enemy-model", type=str, default=None, help="Optional PPO checkpoint for the enemy.")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--deterministic-policy",
+        action="store_true",
+        help="Use deterministic checkpoint inference. Leave off for stochastic playback variety.",
+    )
     parser.add_argument("--hidden-window", action="store_true")
     parser.add_argument("--max-seconds", type=float, default=None)
     parser.add_argument("--record-replay", type=str, default=None, help="Optional replay output path (.ler.gz).")
@@ -46,12 +51,24 @@ def main() -> None:
     renderer = PygameView(world, title=f"Library Escape - AI vs AI ({game_mode_label(selected_mode)})", hidden=args.hidden_window)
     audio = GameAudioController(world)
     player_controller = (
-        SB3PolicyController("player", args.player_model, env_config=env_config)
+        SB3PolicyController(
+            "player",
+            args.player_model,
+            env_config=env_config,
+            deterministic=args.deterministic_policy,
+            decision_repeat_steps=max(1, int(env_config["timing"]["rl_frame_skip"])),
+        )
         if args.player_model
         else HeuristicPlayerController()
     )
     enemy_controller = (
-        SB3PolicyController("enemy", args.enemy_model, env_config=env_config)
+        SB3PolicyController(
+            "enemy",
+            args.enemy_model,
+            env_config=env_config,
+            deterministic=args.deterministic_policy,
+            decision_repeat_steps=max(1, int(env_config["timing"]["rl_frame_skip"])),
+        )
         if args.enemy_model
         else RuleBasedEnemyController()
     )

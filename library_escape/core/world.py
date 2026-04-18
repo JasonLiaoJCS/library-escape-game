@@ -464,11 +464,15 @@ class World:
         aggregated = StepEvents()
         self.last_metrics = self.transition_metrics()
         collect_pressed = (not self.manual_collect_required) if player_collect is None else bool(player_collect)
+        player_start = self.player.position
+        primary_enemy_start = self.enemy.position
         for _ in range(frame_skip):
             step_events = self._substep(player_action, enemy_action, dt=self.physics_dt, player_collect=collect_pressed)
             aggregated.merge(step_events)
             if self.terminated or self.truncated:
                 break
+        aggregated.player_net_displacement = self._distance_between_positions(player_start, self.player.position)
+        aggregated.primary_enemy_net_displacement = self._distance_between_positions(primary_enemy_start, self.enemy.position)
         self.events = aggregated
         return aggregated
 
@@ -488,6 +492,9 @@ class World:
 
         previous_distance = self.distance_between_agents()
         previous_primary_distance = self.primary_enemy_distance()
+        player_start = self.player.position
+        primary_enemy_start = self.enemy.position
+        enemy_starts = {enemy.name: enemy.position for enemy in self.all_enemies()}
 
         self.player.coffee_timer = max(0.0, self.player.coffee_timer - dt)
         self.team_detection_cooldown_timer = max(0.0, self.team_detection_cooldown_timer - dt)
@@ -545,6 +552,18 @@ class World:
         if enemy_collided:
             events.enemy_wall_hits += 1
 
+        player_step_displacement = self._distance_between_positions(player_start, self.player.position)
+        primary_enemy_step_displacement = self._distance_between_positions(primary_enemy_start, self.enemy.position)
+        enemy_step_displacements = {
+            enemy.name: self._distance_between_positions(enemy_starts[enemy.name], enemy.position)
+            for enemy in self.all_enemies()
+        }
+        movement_progress_threshold = max(0.01, min(self.player.base_speed, self.enemy.base_speed) * dt * 0.30)
+        events.player_path_length += player_step_displacement
+        events.primary_enemy_path_length += primary_enemy_step_displacement
+        events.player_net_displacement = player_step_displacement
+        events.primary_enemy_net_displacement = primary_enemy_step_displacement
+
         visible_enemies = self.visible_enemies()
         if visible_enemies:
             self.player_seen = True
@@ -580,9 +599,9 @@ class World:
             events.progress_made = True
         if events.primary_distance_delta > 1e-3:
             events.progress_made = True
-        if abs(self.player.velocity_x) > 1e-6 or abs(self.player.velocity_y) > 1e-6:
+        if player_step_displacement > movement_progress_threshold:
             events.progress_made = True
-        if any(abs(enemy.velocity_x) > 1e-6 or abs(enemy.velocity_y) > 1e-6 for enemy in self.all_enemies()):
+        if any(displacement > movement_progress_threshold for displacement in enemy_step_displacements.values()):
             events.progress_made = True
 
         if not self.is_classic_ruleset():

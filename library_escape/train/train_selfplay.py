@@ -18,12 +18,14 @@ from .callbacks import EvalHistoryCallback, TrainingStatusCallback
 from .common import (
     AlgorithmSpec,
     apply_preset,
+    apply_round_hyperparameter_schedules,
     apply_runtime_overrides,
     build_policy_kwargs,
     build_vec_env,
     default_device,
     find_resume_vecnormalize_path,
     make_single_agent_env_factory,
+    override_model_hyperparameters,
     resolve_algorithm_spec,
     resolve_selfplay_run_dir,
     save_vecnormalize_artifacts,
@@ -208,6 +210,12 @@ def _train_phase(
 
     if resume_model_path is not None:
         model = algo_spec.model_cls.load(str(resume_model_path), env=vec_env, device=default_device(train_cfg))
+        override_model_hyperparameters(
+            model,
+            learning_rate=float(train_cfg["learning_rate"]),
+            clip_range=float(train_cfg["clip_range"]),
+            ent_coef=float(train_cfg["ent_coef"]),
+        )
     else:
         model = algo_spec.model_cls(
             policy="MlpPolicy",
@@ -389,12 +397,20 @@ def main() -> None:
 
     phase_counter = 0
     for round_idx in range(1, rounds + 1):
+        round_train_cfg = apply_round_hyperparameter_schedules(
+            train_cfg, round_idx=round_idx, total_rounds=rounds
+        )
+        print(
+            f"[round {round_idx}] lr={round_train_cfg.get('learning_rate')}, "
+            f"clip_range={round_train_cfg.get('clip_range')}, "
+            f"ent_coef={round_train_cfg.get('ent_coef')}"
+        )
         phase_counter += 1
         enemy_phase_dir = enemy_root / f"round_{round_idx:02d}"
         enemy_path = _train_phase(
             controlled_agent="enemy",
             env_config=env_config,
-            train_cfg=train_cfg,
+            train_cfg=round_train_cfg,
             algo_spec=algo_spec,
             phase_dir=enemy_phase_dir,
             opponent_pool=player_pool,
@@ -413,7 +429,14 @@ def main() -> None:
         )
         current_enemy_model = enemy_path
         enemy_pool.add(
-            _cached_factory(lambda path=enemy_path, env_cfg=deepcopy(env_config): SB3PolicyController("enemy", path, env_config=env_cfg))
+            _cached_factory(
+                lambda path=enemy_path, env_cfg=deepcopy(env_config): SB3PolicyController(
+                    "enemy",
+                    path,
+                    env_config=env_cfg,
+                    deterministic=False,
+                )
+            )
         )
 
         phase_counter += 1
@@ -421,7 +444,7 @@ def main() -> None:
         player_path = _train_phase(
             controlled_agent="player",
             env_config=env_config,
-            train_cfg=train_cfg,
+            train_cfg=round_train_cfg,
             algo_spec=algo_spec,
             phase_dir=player_phase_dir,
             opponent_pool=enemy_pool,
@@ -440,7 +463,14 @@ def main() -> None:
         )
         current_player_model = player_path
         player_pool.add(
-            _cached_factory(lambda path=player_path, env_cfg=deepcopy(env_config): SB3PolicyController("player", path, env_config=env_cfg))
+            _cached_factory(
+                lambda path=player_path, env_cfg=deepcopy(env_config): SB3PolicyController(
+                    "player",
+                    path,
+                    env_config=env_cfg,
+                    deterministic=False,
+                )
+            )
         )
 
         print(f"[round {round_idx}] enemy -> {enemy_path}")

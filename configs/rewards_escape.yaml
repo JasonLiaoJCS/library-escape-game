@@ -1,60 +1,67 @@
 global:
   gamma: 0.99
   clip_range: 320.0
-  zero_sum_mix: 0.22
+  zero_sum_mix: 0.30
 
 enemy:
-  catch_player: 220.0
-  lose_on_escape: -220.0
-  timeout_win: 48.0
+  catch_player: 240.0
+  lose_on_escape: -240.0
+  timeout_win: 60.0
   detection_event_bonus: 0.0
-  primary_visible_per_step: 0.50
-  support_visible_per_step: 0.20
-  team_visible_ratio_per_step: 0.16
-  player_collect_note_penalty: -16.0
+  primary_visible_per_step: 0.18
+  support_visible_per_step: 0.08
+  team_visible_ratio_per_step: 0.08
+  player_collect_note_penalty: -18.0
   player_collect_exam_penalty: -6.0
   player_collect_powerup_penalty: -5.0
-  player_objective_complete_penalty: -30.0
+  player_objective_complete_penalty: -40.0
   timeout_score_denial_bonus: 0.0
   stalemate_score_denial_bonus: 0.0
-  time_penalty: -0.004
+  time_penalty: -0.006
   wall_penalty: -0.08
-  idle_penalty: -0.008
+  idle_penalty: -0.016
   stalemate: -24.0
   potential:
     enabled: true
-    capture_pressure: 2.40
-    team_visibility: 1.55
-    objective_denial: 1.70
-    exit_guard: 2.50
-    encirclement: 1.75
+    capture_pressure: 3.00
+    team_visibility: 1.85
+    objective_denial: 2.00
+    exit_guard: 3.40
+    encirclement: 2.05
 
 player:
-  collect_note: 14.0
+  collect_note: 18.0
   collect_exam: 6.0
   collect_coffee: 5.0
   collect_freeze: 7.0
-  objective_complete_bonus: 32.0
+  objective_complete_bonus: 48.0
   detection_event_penalty: 0.0
-  escape: 220.0
-  caught: -220.0
-  timeout_loss: -48.0
+  escape: 240.0
+  caught: -240.0
+  timeout_loss: -60.0
   timeout_score_progress_bonus: 0.0
   stalemate_score_progress_bonus: 0.0
-  primary_seen_per_step: -0.35
-  support_seen_per_step: -0.14
-  multi_seen_penalty_per_step: -0.12
-  time_penalty: -0.004
+  primary_seen_per_step: -0.15
+  support_seen_per_step: -0.06
+  multi_seen_penalty_per_step: -0.06
+  time_penalty: -0.006
   wall_penalty: -0.08
-  idle_penalty: -0.008
+  idle_penalty: -0.016
   stalemate: -24.0
   potential:
     enabled: true
-    objective_progress: 2.20
-    target_navigation: 1.80
-    escape_navigation: 4.00
-    threat_margin: 1.00
-    exit_window: 2.10
+    objective_progress: 3.00
+    target_navigation: 2.35
+    escape_navigation: 3.50
+    threat_margin: 1.25
+    exit_window: 2.80
 
 anti_exploit:
-  no_progress_penalty: -0.02
+  no_progress_penalty: -0.04
+  stationary_threshold: 0.08
+  oscillation_path_threshold: 0.18
+  oscillation_net_threshold: 0.045
+  player_stationary_penalty: -0.045
+  enemy_stationary_penalty: -0.045
+  player_oscillation_penalty: -0.060
+  enemy_oscillation_penalty: -0.060

@@ -165,7 +165,8 @@ class PlayFrame(BasePanel):
 
         self.mode_var = tk.StringVar(value="Human vs Rule Enemy")
         self.game_mode_var = tk.StringVar(value="collection")
-        self.seed_var = tk.StringVar(value="42")
+        self.seed_var = tk.StringVar(value="")
+        self.deterministic_policy_var = tk.BooleanVar(value=True)
         self.enemy_model_var = tk.StringVar()
         self.player_model_var = tk.StringVar()
         self.record_replay_var = tk.BooleanVar(value=False)
@@ -194,13 +195,16 @@ class PlayFrame(BasePanel):
 
         ttk.Label(left, text="Seed").grid(row=5, column=0, sticky="w")
         ttk.Entry(left, textvariable=self.seed_var, width=12).grid(row=6, column=0, sticky="w", pady=(2, 10))
+        ttk.Checkbutton(left, text="Deterministic checkpoint playback", variable=self.deterministic_policy_var).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        )
 
-        ttk.Checkbutton(left, text="Record replay", variable=self.record_replay_var).grid(row=7, column=0, sticky="w")
-        ttk.Entry(left, textvariable=self.replay_path_var).grid(row=8, column=0, sticky="ew", pady=(6, 6))
-        ttk.Button(left, text="Replay Path", command=self.browse_replay_path).grid(row=8, column=1, padx=(8, 0))
+        ttk.Checkbutton(left, text="Record replay", variable=self.record_replay_var).grid(row=8, column=0, sticky="w")
+        ttk.Entry(left, textvariable=self.replay_path_var).grid(row=9, column=0, sticky="ew", pady=(6, 6))
+        ttk.Button(left, text="Replay Path", command=self.browse_replay_path).grid(row=9, column=1, padx=(8, 0))
 
         button_row = ttk.Frame(left)
-        button_row.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        button_row.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(button_row, text="Start Game", style="Accent.TButton", command=self.launch).pack(side="left", padx=(0, 8))
         ttk.Button(button_row, text="Open Replays", command=lambda: open_path(REPO_ROOT / "replays")).pack(side="left", padx=(0, 8))
         ttk.Button(button_row, text="Open Checkpoints", command=lambda: open_path(REPO_ROOT / "checkpoints")).pack(side="left")
@@ -218,6 +222,8 @@ class PlayFrame(BasePanel):
             "Human vs Rule Enemy: no checkpoint required.\n"
             "Human vs Enemy Checkpoint: choose an enemy .zip model.\n"
             "AI vs AI: choose either or both checkpoints. Empty fields fall back to rule-based agents.\n"
+            "Seed left blank = random reset each launch. Fill a seed only when you want reproducible playback.\n"
+            "Deterministic playback is ON by default for stable argmax-style playback. Turn it off only when you want policy variety.\n"
             "Collection = score-focused stealth mode.\n"
             "Escape = collect required notes, then break out through the exit.\n"
             "Checkpoint playback should usually use the same Game mode the model was trained in.\n"
@@ -257,20 +263,25 @@ class PlayFrame(BasePanel):
         cmd = [str(python_executable())]
         mode = self.mode_var.get()
         selected_mode = normalize_game_mode(self.game_mode_var.get())
-        seed = self.seed_var.get().strip() or "42"
+        seed = self.seed_var.get().strip()
         if mode == "AI vs AI":
-            cmd += ["-m", "library_escape.play.ai_vs_ai", "--seed", seed]
+            cmd += ["-m", "library_escape.play.ai_vs_ai"]
             if self.player_model_var.get().strip():
                 cmd += ["--player-model", self.player_model_var.get().strip()]
             if self.enemy_model_var.get().strip():
                 cmd += ["--enemy-model", self.enemy_model_var.get().strip()]
         else:
-            cmd += ["-m", "library_escape.play.human_vs_ai", "--seed", seed]
+            cmd += ["-m", "library_escape.play.human_vs_ai"]
             if mode == "Human vs Enemy Checkpoint":
                 if not self.enemy_model_var.get().strip():
                     messagebox.showwarning("Checkpoint required", "Please choose an enemy checkpoint first.")
                     return
                 cmd += ["--enemy-model", self.enemy_model_var.get().strip()]
+
+        if seed:
+            cmd += ["--seed", seed]
+        if self.deterministic_policy_var.get():
+            cmd += ["--deterministic-policy"]
 
         if not self._confirm_model_game_mode(mode, selected_mode):
             return
@@ -665,20 +676,26 @@ class ResultsFrame(BasePanel):
 
         self.root_var = tk.StringVar(value=str(REPO_ROOT / "checkpoints"))
         self.summary_path_var = tk.StringVar(value="No run selected")
+        self.deterministic_playback_var = tk.BooleanVar(value=True)
 
         ttk.Label(browser, text="Checkpoint root").grid(row=0, column=0, sticky="w")
         ttk.Entry(browser, textvariable=self.root_var).grid(row=1, column=0, sticky="ew", pady=(2, 6))
         ttk.Button(browser, text="Browse Root", command=self.browse_root).grid(row=1, column=1, padx=(8, 0))
         ttk.Button(browser, text="Refresh", command=self.refresh_runs).grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        ttk.Checkbutton(
+            browser,
+            text="Deterministic playback (default)",
+            variable=self.deterministic_playback_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         self.run_list = tk.Listbox(browser, bg="#0b1015", fg="#d9e4f2", selectbackground="#2a8cff", height=24)
-        self.run_list.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        self.run_list.grid(row=4, column=0, columnspan=2, sticky="nsew")
         self.run_list.bind("<<ListboxSelect>>", lambda _event: self.load_selected_run())
-        browser.rowconfigure(3, weight=1)
+        browser.rowconfigure(4, weight=1)
         browser.columnconfigure(0, weight=1)
 
         button_bar = ttk.Frame(browser)
-        button_bar.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        button_bar.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Button(button_bar, text="Open Folder", command=self.open_selected_folder).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Evaluate", command=self.evaluate_selected).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Play AI vs AI", command=self.play_selected).pack(side="left", padx=(0, 8))
@@ -830,11 +847,13 @@ class ResultsFrame(BasePanel):
         player_model, enemy_model = self._selected_models()
         summary = read_json(self.selected_run_dir / "training_summary.json")
         game_mode = normalize_game_mode(summary.get("game_mode", summary.get("env_config", {}).get("world", {}).get("game_mode", "escape")))
-        cmd = [str(python_executable()), "-m", "library_escape.play.ai_vs_ai", "--seed", "42"]
+        cmd = [str(python_executable()), "-m", "library_escape.play.ai_vs_ai"]
         if player_model:
             cmd += ["--player-model", player_model]
         if enemy_model:
             cmd += ["--enemy-model", enemy_model]
+        if self.deterministic_playback_var.get():
+            cmd += ["--deterministic-policy"]
         cmd += ["--game-mode", game_mode]
         subprocess.Popen(cmd, cwd=str(REPO_ROOT))
 

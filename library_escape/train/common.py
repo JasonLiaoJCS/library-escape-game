@@ -205,6 +205,7 @@ def _build_history_pool(role: str, env_config: dict[str, Any], max_items: int, s
                     model_role,
                     path,
                     env_config=env_cfg,
+                    deterministic=False,
                 )
             )
         )
@@ -356,6 +357,81 @@ def save_vecnormalize_artifacts(vec_env, model_output_path: Path) -> None:
 
 def default_device(train_cfg: dict[str, Any]) -> str:
     return str(train_cfg.get("device", "auto"))
+
+
+def interpolate_across_rounds(
+    schedule_cfg: Any,
+    round_idx: int,
+    total_rounds: int,
+    default: float,
+) -> float:
+    """Linear interpolation of a hyperparameter across self-play rounds.
+
+    ``round_idx`` is 1-indexed. If ``schedule_cfg`` is a scalar or unrecognised
+    shape, the scalar (or default) is returned unchanged.
+    """
+    if isinstance(schedule_cfg, (int, float)):
+        return float(schedule_cfg)
+    if not isinstance(schedule_cfg, dict):
+        return float(default)
+    schedule_type = str(schedule_cfg.get("type", "linear")).lower()
+    start = float(schedule_cfg.get("start", default))
+    end = float(schedule_cfg.get("end", start))
+    if schedule_type == "constant" or total_rounds <= 1:
+        return start
+    progress = (round_idx - 1) / max(1, (total_rounds - 1))
+    return start + (end - start) * progress
+
+
+def apply_round_hyperparameter_schedules(
+    base_train_cfg: dict[str, Any],
+    round_idx: int,
+    total_rounds: int,
+) -> dict[str, Any]:
+    """Return a deepcopy of ``base_train_cfg`` with per-round hparams filled in.
+
+    Reads ``learning_rate_schedule``, ``clip_range_schedule`` and
+    ``ent_coef_schedule`` entries and overwrites the corresponding scalar keys.
+    Keys without a schedule are left untouched.
+    """
+    round_cfg = deepcopy(base_train_cfg)
+    schedule_map = {
+        "learning_rate": "learning_rate_schedule",
+        "clip_range": "clip_range_schedule",
+        "ent_coef": "ent_coef_schedule",
+    }
+    for scalar_key, schedule_key in schedule_map.items():
+        schedule_cfg = base_train_cfg.get(schedule_key)
+        if schedule_cfg is None:
+            continue
+        default_scalar = float(base_train_cfg.get(scalar_key, 0.0))
+        round_cfg[scalar_key] = interpolate_across_rounds(
+            schedule_cfg, round_idx, total_rounds, default_scalar
+        )
+    return round_cfg
+
+
+def override_model_hyperparameters(
+    model,
+    *,
+    learning_rate: float,
+    clip_range: float,
+    ent_coef: float,
+) -> None:
+    """Force a loaded SB3 PPO model to use the round's hyperparameters.
+
+    ``PPO.load`` restores the schedules that were saved with the checkpoint,
+    so a naive resume would ignore new learning-rate / clip-range / entropy
+    settings. This helper replaces them with constants for the next phase.
+    """
+    from stable_baselines3.common.utils import get_schedule_fn
+
+    model.learning_rate = float(learning_rate)
+    model.lr_schedule = get_schedule_fn(float(learning_rate))
+    model.clip_range = get_schedule_fn(float(clip_range))
+    if hasattr(model, "clip_range_vf") and model.clip_range_vf is not None:
+        model.clip_range_vf = get_schedule_fn(float(clip_range))
+    model.ent_coef = float(ent_coef)
 
 
 def load_role_configs(role: str, preset: str | None, game_mode: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
