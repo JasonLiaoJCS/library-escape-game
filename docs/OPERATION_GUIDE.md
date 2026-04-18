@@ -610,6 +610,12 @@ GUI 主檔：
 - 開啟 replay 錄製
 - 如果 checkpoint 的訓練模式和目前播放的 `Game mode` 不一致，GUI 會先警告
 
+重點：
+
+- `Play` 是手動發射頁
+- 你自己決定載哪個 player checkpoint、哪個 enemy checkpoint、用哪個 `Game mode`
+- 最適合做自由組合對戰、人工驗證、錄 replay
+
 ### 7.2 Train
 
 用途：
@@ -629,6 +635,20 @@ GUI 主檔：
 - 改 opponent curriculum 權重
 - 看 live ETA / FPS / reward
 
+主要按鈕：
+
+- `Start Training`
+- `Stop`
+- `Open Run Folder`
+- `Open TensorBoard Server`
+
+重點：
+
+- `Train` 是訓練控制中心
+- `Mode` 決定你訓練的是 `enemy` / `player` / `selfplay`
+- `Game mode` 決定你是在 `Collection` 還是 `Escape` 規則下訓練
+- `Run dir` 會直接顯示目前這個訓練 run 的實際輸出位置
+
 ### 7.3 Results
 
 用途：
@@ -640,12 +660,36 @@ GUI 主檔：
 - 啟動 AI vs AI
 - 啟動 TensorBoard server
 
+重點：
+
+- `Results` 不是手動選模型，而是先選一個已經存在的訓練 run
+- 它會從該 run 的 `training_summary.json` 自動帶出模式、演算法、摘要與曲線
+- `Play AI vs AI` 會自動用該 run 的最終模型啟動對戰
+
+補充：
+
+- 如果你選到的是 `enemy` 單訓 run，`Results -> Play AI vs AI` 會用這個 enemy checkpoint 對 rule-based player
+- 如果你選到的是 `player` 單訓 run，會用這個 player checkpoint 對 rule-based enemy
+- 如果你選到的是 `selfplay` run，會同時帶出該 run 的最終 player / enemy checkpoint
+
+所以：
+
+- 想看「這個 run 最終學成怎樣」：用 `Results`
+- 想手動拼裝不同 run 的 player / enemy：用 `Play`
+
 ### 7.4 TensorBoard
 
 用途：
 
 - 直接讀 `tb/` 裡的 event files
 - 在 GUI 內畫 scalar 曲線
+
+重點：
+
+- 這是 GUI 內建的 TensorBoard scalar 檢視器
+- 不用另外開瀏覽器，也能直接挑 tag 看曲線
+- 右側會顯示每條曲線的 `latest / min / max`
+- 如果你想看更完整的 TensorBoard 頁面，還是可以從 `Train` 或 `Results` 開外部 TensorBoard server
 
 ### 7.5 Leaderboard
 
@@ -655,6 +699,12 @@ GUI 主檔：
 - 自動對戰
 - 建 player / enemy 的 Elo 排名
 
+重點：
+
+- 這頁是拿來比較不同 checkpoint 強弱
+- 它會把玩家模型和敵人模型配對對戰，再用 Elo 更新 rating
+- 你可以調 `Episodes`、`Max players`、`Max enemies`、`K-factor`
+
 ### 7.6 Replay
 
 用途：
@@ -663,6 +713,11 @@ GUI 主檔：
 - 顯示 replay metadata
 - 播放 replay
 - 匯出 frames
+
+重點：
+
+- `Replay` 播的是已錄下來的對局，不是重新跑一次即時模擬
+- 適合回顧 AI 行為、找 bug、展示成果、匯出畫面
 
 ### 7.7 Config
 
@@ -675,6 +730,27 @@ GUI 主檔：
   - `training.yaml`
   - `map.json`
   - 本文件
+
+重點：
+
+- `Config` 不是在 GUI 裡直接編輯設定
+- 它是「常用檔案快速入口」
+- 當你想改 reward、環境、地圖、訓練 preset、文件時，這一頁會幫你直接打開對應檔案
+
+### 7.8 `Play` 和 `Results -> Play AI vs AI` 到底差在哪裡
+
+兩者最後都會開 `AI vs AI`，但差別是：
+
+- `Play`
+  - 你手動指定 checkpoint
+  - 你手動指定 `Game mode`
+  - 你可以自由混搭不同 run 的模型
+  - 你可以順手錄 replay
+- `Results -> Play AI vs AI`
+  - 先選一個訓練 run
+  - GUI 幫你自動讀該 run 的 `training_summary.json`
+  - 自動帶出該 run 的最終模型與對應 `Game mode`
+  - 更適合「我剛 train 完，想直接看這次 run 的最終成果」
 
 ---
 
@@ -2102,6 +2178,80 @@ python -m library_escape.train.train_selfplay --game-mode collection --preset ba
 - 玩家：[`checkpoints/player_single/`](../checkpoints/player_single)
 - self-play：[`checkpoints/selfplay/`](../checkpoints/selfplay)
 
+目前正式使用中的 run 目錄規則是：
+
+- 敵人單獨訓練：`checkpoints/enemy/<game_mode>/<run_name>/`
+- 玩家單獨訓練：`checkpoints/player_single/<game_mode>/<run_name>/`
+- self-play：`checkpoints/selfplay/<game_mode>/<run_name>/`
+
+其中 `<game_mode>` 只有：
+
+- `collection`
+- `escape`
+
+所以你之後找檔案時，請直接照這 6 種路徑看：
+
+- `checkpoints/enemy/collection/<run_name>/`
+- `checkpoints/enemy/escape/<run_name>/`
+- `checkpoints/player_single/collection/<run_name>/`
+- `checkpoints/player_single/escape/<run_name>/`
+- `checkpoints/selfplay/collection/<run_name>/`
+- `checkpoints/selfplay/escape/<run_name>/`
+
+### 20.1.1 目前整理後的 checkpoint 規則
+
+我已經把舊版殘留輸出與 smoke 測試輸出搬去 archive：
+
+- [`checkpoints/_archive/`](../checkpoints/_archive)
+
+這代表：
+
+- `checkpoints/enemy/`
+- `checkpoints/player_single/`
+- `checkpoints/selfplay/`
+
+現在應該只拿來放**目前這版正式結構**的 run。
+
+GUI 的：
+
+- `Results`
+- `TensorBoard`
+- `Leaderboard`
+
+也都已經改成會忽略 `checkpoints/_archive/`，所以你平常不需要去 archive 裡找新訓練結果。
+
+### 20.1.2 最常見的實際例子
+
+如果你 train 的是：
+
+- `enemy + escape + run_name = enemy_escape_test_01`
+
+那 run 目錄就是：
+
+```text
+checkpoints/enemy/escape/enemy_escape_test_01/
+```
+
+如果你 train 的是：
+
+- `player + collection + run_name = player_collection_test_01`
+
+那 run 目錄就是：
+
+```text
+checkpoints/player_single/collection/player_collection_test_01/
+```
+
+如果你 train 的是：
+
+- `selfplay + escape + run_name = selfplay_escape_long_01`
+
+那 run 目錄就是：
+
+```text
+checkpoints/selfplay/escape/selfplay_escape_long_01/
+```
+
 ### 20.2 一個 run 裡面通常會有
 
 - `models/`
@@ -2115,6 +2265,35 @@ python -m library_escape.train.train_selfplay --game-mode collection --preset ba
 - `*.obsnorm.npz`
 - `*.meta.json`
 
+### 20.2.1 哪些檔案是你最常需要看的
+
+如果你只是想快速定位：
+
+- 看目前進度 / ETA / FPS / mean reward：
+  - `progress.json`
+- 看整段訓練歷史：
+  - `progress_history.jsonl`
+- 看 evaluation 歷史：
+  - `eval_history.jsonl`
+- 看 TensorBoard event：
+  - `tb/`
+- 看 SB3 monitor：
+  - `monitor/`
+- 看這次 run 的完整摘要：
+  - `training_summary.json`
+
+### 20.2.2 GUI 裡對應到哪裡
+
+在 GUI：
+
+- `Train`
+  - 目前正在跑的 run 路徑會顯示在 `Run dir`
+  - 按 `Open Run Folder` 可直接打開
+- `Results`
+  - 會直接掃描這些 run 目錄裡的 `training_summary.json`
+- `TensorBoard`
+  - 會直接掃描 run 目錄裡的 `tb/`
+
 ### 20.3 `models/` 裡面會有什麼
 
 常見：
@@ -2124,6 +2303,47 @@ python -m library_escape.train.train_selfplay --game-mode collection --preset ba
 - `best_model.zip`
 - `enemy_round_01_latest.zip`
 - `player_round_01_latest.zip`
+
+### 20.3.1 各種訓練類型最重要的模型檔在哪裡
+
+#### 敵人單獨訓練
+
+最常用的是：
+
+```text
+checkpoints/enemy/<game_mode>/<run_name>/models/enemy_latest.zip
+```
+
+#### 玩家單獨訓練
+
+最常用的是：
+
+```text
+checkpoints/player_single/<game_mode>/<run_name>/models/player_latest.zip
+```
+
+#### self-play
+
+self-play 不是只產生一個單一 `models/` 資料夾，而是會分回合存在：
+
+```text
+checkpoints/selfplay/<game_mode>/<run_name>/
+  enemy/round_01/models/...
+  enemy/round_02/models/...
+  player/round_01/models/...
+  player/round_02/models/...
+```
+
+最終應該用哪個檔，最穩妥的方式是看：
+
+- `training_summary.json`
+
+裡面的：
+
+- `final_player_model`
+- `final_enemy_model`
+
+這兩個欄位會告訴你最後建議拿去播放 / 評估的模型路徑。
 
 ### 20.4 TensorBoard
 

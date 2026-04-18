@@ -683,6 +683,360 @@ checkpoints/selfplay/escape/selfplay_escape_test_01/
 
 你也可以直接去 GUI 的 `Results` 頁選這個 run。
 
+### 11.4 以後我訓練完到底要去哪裡找檔案
+
+先記這個總規則：
+
+- 敵人單獨訓練：`checkpoints/enemy/<game_mode>/<run_name>/`
+- 玩家單獨訓練：`checkpoints/player_single/<game_mode>/<run_name>/`
+- self-play：`checkpoints/selfplay/<game_mode>/<run_name>/`
+
+其中 `<game_mode>` 只有兩種：
+
+- `collection`
+- `escape`
+
+所以你之後最常看的實際位置就是：
+
+```text
+checkpoints/enemy/collection/<run_name>/
+checkpoints/enemy/escape/<run_name>/
+checkpoints/player_single/collection/<run_name>/
+checkpoints/player_single/escape/<run_name>/
+checkpoints/selfplay/collection/<run_name>/
+checkpoints/selfplay/escape/<run_name>/
+```
+
+如果你想找「最重要的模型檔」，直接看：
+
+- 敵人單訓：`models/enemy_latest.zip`
+- 玩家單訓：`models/player_latest.zip`
+- self-play：看 `training_summary.json` 裡記錄的 `final_player_model` / `final_enemy_model`
+
+self-play 的 run 裡通常會長這樣：
+
+```text
+checkpoints/selfplay/escape/<run_name>/
+  enemy/round_01/models/...
+  enemy/round_02/models/...
+  player/round_01/models/...
+  player/round_02/models/...
+  progress.json
+  progress_history.jsonl
+  eval_history.jsonl
+  training_summary.json
+```
+
+如果你想找「訓練過程的 logs」，最常看的是：
+
+- `progress.json`
+  - 現在這一刻的進度、ETA、FPS、mean reward
+- `progress_history.jsonl`
+  - 每次進度更新的歷史紀錄
+- `eval_history.jsonl`
+  - 每次 evaluation 的歷史紀錄
+- `monitor/`
+  - SB3 monitor 輸出
+- `tb/`
+  - TensorBoard event 檔
+
+你現在也可以把 `checkpoints/_archive/` 當成「舊資料倉庫」來理解：
+
+- 以前整理前的舊 run、smoke run、舊版殘留資料都搬去那裡了
+- GUI 的 `Results` / `TensorBoard` / `Leaderboard` 現在會忽略它
+- 所以你平常**不要去 `_archive` 找新訓練結果**
+
+最簡單的做法其實是：
+
+1. 在 GUI 的 `Train` 開始訓練
+2. 訓練結束後按 `Open Run Folder`
+3. 或去 GUI 的 `Results` 頁直接選你的 run
+
+### 11.5 GUI 各分頁到底差在哪裡
+
+這是很多人第一次用時最容易混淆的地方。
+
+先記一句最重要的：
+
+- `Play` 是**手動選模型、手動選模式、手動發射遊戲**
+- `Results` 是**先選一個已存在的訓練 run，然後讓 GUI 幫你帶出那個 run 對應的模型與模式**
+
+也就是說：
+
+- 如果你已經知道自己要拿哪兩個 checkpoint 打，去 `Play`
+- 如果你想從「某次訓練結果」直接接著看曲線、看摘要、按一下就播放，去 `Results`
+
+#### `Play` 分頁
+
+用途：
+
+- 開遊戲
+- 手動指定 `player` / `enemy` checkpoint
+- 手動選 `Collection` / `Escape`
+- 手動決定要不要錄 replay
+
+你會看到的主要欄位：
+
+- `Mode`
+  - `Human vs Rule Enemy`
+  - `Human vs Enemy Checkpoint`
+  - `AI vs AI`
+- `Game mode`
+  - `collection`
+  - `escape`
+- `Seed`
+- `Record replay`
+- `Enemy checkpoint`
+- `Player checkpoint`
+
+主要按鈕：
+
+- `Start Game`
+  - 依你現在畫面上填的內容直接開遊戲
+- `Open Replays`
+  - 打開 `replays/`
+- `Open Checkpoints`
+  - 打開 `checkpoints/`
+
+這一頁的特性是：
+
+- 你可以任意組合 checkpoint
+- 你可以用不同 run 訓練出來的 player / enemy 直接互打
+- 你也可以一邊載 player checkpoint、一邊讓 enemy 留空，這樣它就會退回 rule-based baseline
+
+#### `Results` 分頁
+
+用途：
+
+- 看你以前 train 過的 run
+- 看那個 run 的摘要與曲線
+- 從那個 run 直接評估 / 播放 / 開 TensorBoard
+
+你會看到：
+
+- 左邊：run 清單
+- 右邊：這個 run 的 `training_summary.json` 內容與圖表
+
+主要按鈕：
+
+- `Refresh`
+  - 重新掃描 run
+- `Open Folder`
+  - 打開你選到的 run 資料夾
+- `Evaluate`
+  - 用這個 run 的最終模型做一次 quick evaluation
+- `Play AI vs AI`
+  - 用這個 run 對應的最終模型直接開一場 `AI vs AI`
+- `TensorBoard Server`
+  - 直接替這個 run 開 TensorBoard server
+
+##### `Results -> Play AI vs AI` 和 `Play` 分頁自己手動選 checkpoint 有什麼差別？
+
+兩者最後都是在開 `AI vs AI`，但差別在於「模型和模式是誰幫你決定」。
+
+`Results -> Play AI vs AI`：
+
+- 模型是從你選的 run 的 `training_summary.json` 自動帶出來
+- `Game mode` 也是從那個 run 的摘要自動帶出來
+- 適合：「我剛 train 完一個 run，我現在就想看它到底學成怎樣」
+
+`Play` 分頁手動選 checkpoint：
+
+- 你自己決定 player model 是哪個
+- 你自己決定 enemy model 是哪個
+- 你自己決定 `Game mode`
+- 適合：
+  - 比較不同 run 的模型
+  - 交叉測試不同來源的 player / enemy
+  - 想錄 replay
+  - 想做很自由的對戰組合
+
+##### 再更具體地講
+
+如果你在 `Results` 選的是：
+
+- 一個 `enemy` 單訓 run
+
+那 `Play AI vs AI` 其實會：
+
+- 用這個敵人模型
+- 玩家那邊留空，所以回退成 heuristic / baseline player
+
+如果你選的是：
+
+- 一個 `player` 單訓 run
+
+那它會：
+
+- 用這個玩家模型
+- 敵人那邊留空，所以回退成 rule-based enemy
+
+如果你選的是：
+
+- 一個 `selfplay` run
+
+那它會：
+
+- 同時載入這個 run 最終的 player model
+- 同時載入這個 run 最終的 enemy model
+
+所以：
+
+- 想看「這個 run 最終成果」：用 `Results`
+- 想自由拼裝對戰：用 `Play`
+
+#### `Train` 分頁
+
+用途：
+
+- 開訓練
+- 看 live progress
+- 看 ETA
+- 看 logs
+
+你會填的主要欄位：
+
+- `Mode`
+  - `enemy`
+  - `player`
+  - `selfplay`
+- `Game mode`
+  - `collection`
+  - `escape`
+- `Preset`
+- `Run name`
+- `Timesteps / round`
+- `Rounds (selfplay)`
+- `Vector envs`
+- `Seed`
+- `Device`
+
+右邊 `Algorithms And Curriculum` 是進階區：
+
+- `Algorithm`
+- single-agent opponent curriculum 權重
+- self-play bootstrap / latest / historical 權重
+- `MAPPO recipe command`
+
+主要按鈕：
+
+- `Start Training`
+  - 依照目前欄位開始訓練
+- `Stop`
+  - 中止目前訓練
+- `Open Run Folder`
+  - 打開目前正在訓練的 run 目錄
+- `Open TensorBoard Server`
+  - 替目前這個 run 開 TensorBoard server
+
+#### `TensorBoard` 分頁
+
+用途：
+
+- 不用另外開瀏覽器，也能直接在 GUI 裡看 TensorBoard scalar
+
+它做的事是：
+
+- 掃描 run 目錄裡 `tb/` 下面的 event files
+- 把 scalar tag 列出來
+- 讓你一次選最多幾條曲線來畫
+- 顯示每條曲線的 `latest / min / max`
+
+它比較像：
+
+- 「內建版 TensorBoard 曲線瀏覽器」
+
+如果你想看得更完整，還是可以用：
+
+- `Train` 頁的 `Open TensorBoard Server`
+- 或 `Results` 頁的 `TensorBoard Server`
+
+#### `Leaderboard` 分頁
+
+用途：
+
+- 自動替模型做 Elo 排名
+
+你要填的主要欄位：
+
+- `Checkpoint root`
+- `Output JSON`
+- `Episodes`
+- `Max players`
+- `Max enemies`
+- `K-factor`
+
+主要按鈕：
+
+- `Build Leaderboard`
+  - 掃描 root 下的模型並自動配對對戰
+- `Load Existing`
+  - 載入以前存好的 leaderboard JSON
+- `Open Output`
+  - 打開 leaderboard JSON
+
+這頁的意義是：
+
+- 如果你手上已經有很多 player / enemy checkpoint
+- 想知道誰比較強
+- 想用 Elo 方式做相對排名
+
+那就用這頁。
+
+#### `Replay` 分頁
+
+用途：
+
+- 看你之前錄下來的 `.ler.gz` 對局檔
+
+它可以做的事：
+
+- 掃描 replay 檔
+- 顯示 replay metadata
+- `Play Replay`
+- `Export Frames`
+
+這裡的 `Replay` 不是重新跑一場模擬，而是：
+
+- 播放你以前錄下來的對局紀錄
+
+所以它很適合拿來：
+
+- 回顧某次 AI 對戰
+- 檢查模型是不是做了奇怪的決策
+- 匯出畫面做展示
+
+#### `Config` 分頁
+
+用途：
+
+- 快速打開最常改的設定檔和說明書
+
+它不是拿來直接在 GUI 裡改參數，而是：
+
+- 幫你一鍵打開常用檔案
+
+像是：
+
+- `Quick Start Guide`
+- `Collection Rewards`
+- `Escape Rewards`
+- `Environment`
+- `Training`
+- `Map`
+- `Game Modes Helper`
+- `Operation Guide`
+- `Project Root`
+
+如果你現在的需求是：
+
+- 「我要改 reward」
+  - 去 `Config -> Collection Rewards / Escape Rewards`
+- 「我要改 observation / world 參數」
+  - 去 `Config -> Environment`
+- 「我要改訓練 preset / algorithm」
+  - 去 `Config -> Training`
+
 ---
 
 ## 12. CLI 路線：如果你想用指令操作
@@ -1044,6 +1398,21 @@ batch_size
 - `progress_history.jsonl`
 - `eval_history.jsonl`
 - `models/*.zip`
+
+如果你只是想最快找到東西，直接照下面找：
+
+- `enemy + collection`
+  - `checkpoints/enemy/collection/<run_name>/`
+- `enemy + escape`
+  - `checkpoints/enemy/escape/<run_name>/`
+- `player + collection`
+  - `checkpoints/player_single/collection/<run_name>/`
+- `player + escape`
+  - `checkpoints/player_single/escape/<run_name>/`
+- `selfplay + collection`
+  - `checkpoints/selfplay/collection/<run_name>/`
+- `selfplay + escape`
+  - `checkpoints/selfplay/escape/<run_name>/`
 
 ---
 

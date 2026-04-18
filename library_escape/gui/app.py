@@ -74,11 +74,17 @@ def checkpoint_root_for_mode(mode: str, game_mode: str) -> Path:
     return resolve_repo_path(training_cfg["self_play"]["checkpoint_root_dir"]) / normalize_game_mode(game_mode)
 
 
+def _is_archived_checkpoint_path(path: Path) -> bool:
+    return "_archive" in path.parts
+
+
 def discover_training_runs(root: Path) -> list[dict]:
     runs: list[dict] = []
     if not root.exists():
         return runs
     for summary_path in sorted(root.rglob("training_summary.json")):
+        if _is_archived_checkpoint_path(summary_path):
+            continue
         payload = read_json(summary_path)
         if payload.get("mode") == "self_play_phase":
             continue

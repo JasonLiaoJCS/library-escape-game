@@ -29,6 +29,10 @@ def _resolve_model_path(raw_path: str | None, summary_dir: Path) -> Path | None:
     return (REPO_ROOT / path).resolve() if not (summary_dir / path).exists() else (summary_dir / path).resolve()
 
 
+def _is_archived_checkpoint_path(path: Path) -> bool:
+    return "_archive" in path.parts
+
+
 def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
     root = (root or (REPO_ROOT / "checkpoints")).resolve()
     candidates: list[ModelCandidate] = []
@@ -36,6 +40,8 @@ def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
         return candidates
 
     for summary_path in sorted(root.rglob("training_summary.json")):
+        if _is_archived_checkpoint_path(summary_path):
+            continue
         summary = summary_path.read_text(encoding="utf-8")
         try:
             import json
