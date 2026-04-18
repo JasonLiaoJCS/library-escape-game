@@ -24,11 +24,13 @@ from .common import (
     write_training_summary,
 )
 from ..config import resolve_repo_path
+from ..game_modes import game_mode_label, normalize_game_mode
 
 
 def build_parser(role: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Train a {role} PPO policy for Library Escape.")
     parser.add_argument("--preset", type=str, default="balanced")
+    parser.add_argument("--game-mode", type=str, choices=("collection", "escape"), default="escape")
     parser.add_argument("--timesteps", type=int, default=None, help="Override total training timesteps.")
     parser.add_argument("--n-envs", type=int, default=None, help="Override vectorized environment count.")
     parser.add_argument("--seed", type=int, default=7)
@@ -49,7 +51,8 @@ def run_single_agent(role: str) -> None:
         raise RuntimeError("stable-baselines3 is required for training. Install with `pip install -e .[rl]`.") from exc
 
     args = build_parser(role).parse_args()
-    env_config, train_cfg, _ = load_role_configs(role, args.preset)
+    game_mode = normalize_game_mode(args.game_mode)
+    env_config, train_cfg, _ = load_role_configs(role, args.preset, game_mode)
 
     if args.timesteps is not None:
         train_cfg["total_timesteps"] = int(args.timesteps)
@@ -64,7 +67,7 @@ def run_single_agent(role: str) -> None:
     if algo_spec.uses_action_masks and str(env_config["action"]["type"]).lower() != "discrete":
         raise RuntimeError("MaskablePPO requires `action.type: discrete` in configs/env.yaml or GUI overrides.")
 
-    run_dir = resolve_single_agent_run_dir(role, train_cfg, args.run_name)
+    run_dir = resolve_single_agent_run_dir(role, train_cfg, args.run_name, game_mode)
     models_dir = run_dir / "models"
     monitor_dir = run_dir / "monitor"
     tensorboard_dir = run_dir / "tb"
@@ -204,6 +207,8 @@ def run_single_agent(role: str) -> None:
             "train_config": train_cfg,
             "seed": args.seed,
             "preset": args.preset,
+            "game_mode": game_mode,
+            "game_mode_label": game_mode_label(game_mode),
             "resume_path": resume_path,
         },
     )
@@ -213,6 +218,8 @@ def run_single_agent(role: str) -> None:
             "role": role,
             "algorithm": algo_spec.summary_name,
             "run_dir": run_dir,
+            "game_mode": game_mode,
+            "game_mode_label": game_mode_label(game_mode),
         },
     )
     if best_model_path.exists():
@@ -222,6 +229,8 @@ def run_single_agent(role: str) -> None:
                 "role": role,
                 "algorithm": algo_spec.summary_name,
                 "run_dir": run_dir,
+                "game_mode": game_mode,
+                "game_mode_label": game_mode_label(game_mode),
             },
         )
 

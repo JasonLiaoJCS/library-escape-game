@@ -8,6 +8,7 @@ from pathlib import Path
 
 from library_escape.eval.elo import build_leaderboard, play_match, save_leaderboard
 from library_escape.eval.registry import ModelCandidate
+from library_escape.game_modes import read_model_game_mode
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +34,7 @@ def _candidate(role: str, raw_path: str) -> ModelCandidate:
         summary_path=path.parent / "training_summary.json",
         mode="manual",
         algorithm="unknown",
+        game_mode=read_model_game_mode(path) or "escape",
     )
 
 

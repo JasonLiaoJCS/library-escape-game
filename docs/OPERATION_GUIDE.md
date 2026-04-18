@@ -25,6 +25,10 @@
 3. 把玩法核心改成 **連續時間 / 固定物理步長**
 4. 加入 **Gymnasium / PettingZoo / Stable-Baselines3 / Maskable PPO**
 5. 加入 **GUI、ETA、TensorBoard 面板、Replay、Elo leaderboard**
+6. 把使用者模式整理成 **Collection / Escape 兩套 Game mode**
+7. 把敵方壓力改成 **多敵人團隊巡邏**
+8. 針對多人巡邏規則重做 **reward shaping / curriculum / Maskable PPO 預設**
+9. 把原版 repo 內仍存在的 **背景音樂 / 偵測 / 成績音效** 接回 Python 播放流程
 
 所以現在這個 repo 同時有兩套東西：
 
@@ -32,6 +36,19 @@
 - 新版：Python / pygame / RL
 
 如果你要玩、要訓練、要用新功能，**請用 Python 版**。
+
+補充：
+
+- `human_vs_ai` / `ai_vs_ai` 現在正式用 `--game-mode collection` 與 `--game-mode escape`
+- `Collection` 會把玩法拉回比較接近原本 C++ 的計分 / 躲偵測主線
+- `Escape` 會保留目前 RL 訓練用的抓捕 / 逃脫對抗規則
+- `Collection` 固定是 `5` 個敵人
+- `Escape` 預設是 `2` 個敵人（`1` 主敵人 + `1` 支援巡邏敵人）
+- `AI vs AI` 如果沒有載入 checkpoint，跑的是內建 script baseline，不是未訓練神經網路
+- `Collection` 的人類玩法仍然需要長按收集
+- 所有模式都加入了短暫收集延遲，不再有瞬間拿書
+- reset 後會有短暫 startup grace，避免玩家在開場第一瞬間就被偵測
+- 舊的 `classic` / `rl` 只保留成內部相容別名，不再是使用者主要名詞
 
 ---
 
@@ -118,7 +135,8 @@ Python 版主要模組：
 
 - 環境設定：[`configs/env.yaml`](../configs/env.yaml)
 - 地圖：[`configs/map.json`](../configs/map.json)
-- 獎勵：[`configs/rewards.yaml`](../configs/rewards.yaml)
+- Collection 獎勵：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+- Escape 獎勵：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 - 訓練：[`configs/training.yaml`](../configs/training.yaml)
 
 ### 2.4 加入單智能體與多智能體 RL 環境
@@ -162,7 +180,7 @@ Python 版主要模組：
 
 關鍵檔案：
 
-- Reward config：[`configs/rewards.yaml`](../configs/rewards.yaml)
+- Reward config：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml) / [`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 - Reward code：[`library_escape/rewards/reward_fns.py`](../library_escape/rewards/reward_fns.py)
 
 ### 2.7 加入 GUI
@@ -358,12 +376,18 @@ RL 訓練時不需要每個物理子步都讓 agent 做一次決策，不然太�
 
 - `Python 3.12`
 
-建立虛擬環境：
+先切到專案根目錄：
+
+```powershell
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+```
+
+再建立虛擬環境：
 
 ```powershell
 py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[rl,dev]
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[rl,dev]"
 ```
 
 ### 6.2 直接啟動 GUI
@@ -380,47 +404,69 @@ python -m library_escape.gui.app
 library-escape-gui
 ```
 
-### 6.3 直接玩遊戲
+### 6.3 先確認你用到的是正確的 Python
+
+如果你同時在別的地方也有 `.venv`，請先執行：
+
+```powershell
+python -c "import sys; print(sys.executable)"
+```
+
+你應該看到：
+
+```text
+C:\Users\User\Desktop\大四其他\library-escape-game\.venv\Scripts\python.exe
+```
+
+如果你看到的是：
+
+```text
+C:\Users\User\.venv\Scripts\python.exe
+```
+
+那代表你啟用錯了虛擬環境。
+
+### 6.4 直接玩遊戲
 
 人類對 AI：
 
 ```powershell
-python -m library_escape.play.human_vs_ai
+python -m library_escape.play.human_vs_ai --game-mode collection
 ```
 
 指定敵人 checkpoint：
 
 ```powershell
-python -m library_escape.play.human_vs_ai --enemy-model checkpoints\enemy\your_run\models\enemy_latest.zip
+python -m library_escape.play.human_vs_ai --game-mode escape --enemy-model checkpoints\enemy\escape\your_run\models\enemy_latest.zip
 ```
 
 AI 對 AI：
 
 ```powershell
-python -m library_escape.play.ai_vs_ai
+python -m library_escape.play.ai_vs_ai --game-mode collection
 ```
 
 指定雙方模型：
 
 ```powershell
-python -m library_escape.play.ai_vs_ai --player-model checkpoints\player_single\your_run\models\player_latest.zip --enemy-model checkpoints\enemy\your_run\models\enemy_latest.zip
+python -m library_escape.play.ai_vs_ai --game-mode escape --player-model checkpoints\player_single\escape\your_run\models\player_latest.zip --enemy-model checkpoints\enemy\escape\your_run\models\enemy_latest.zip
 ```
 
-### 6.4 錄 Replay
+### 6.5 錄 Replay
 
 人類對 AI 時錄 replay：
 
 ```powershell
-python -m library_escape.play.human_vs_ai --record-replay replays\my_session.ler.gz
+python -m library_escape.play.human_vs_ai --game-mode collection --record-replay replays\my_session.ler.gz
 ```
 
 AI 對 AI 時錄 replay：
 
 ```powershell
-python -m library_escape.play.ai_vs_ai --record-replay replays\ai_match.ler.gz
+python -m library_escape.play.ai_vs_ai --game-mode escape --record-replay replays\ai_match.ler.gz
 ```
 
-### 6.5 播放 Replay
+### 6.6 播放 Replay
 
 ```powershell
 python -m library_escape.replay.viewer --replay replays\my_session.ler.gz
@@ -432,11 +478,115 @@ python -m library_escape.replay.viewer --replay replays\my_session.ler.gz
 python -m library_escape.replay.viewer --replay replays\my_session.ler.gz --export-frames videos\frames\my_session
 ```
 
-### 6.6 跑測試
+### 6.7 跑測試
 
 ```powershell
 pytest -q
 ```
+
+### 6.8 你剛剛實際遇到過的安裝與啟動問題
+
+#### 問題 A：`pip install -e .[rl,dev]` 裝錯資料夾
+
+錯誤會長這樣：
+
+```text
+ERROR: file:///C:/Users/User does not appear to be a Python project
+```
+
+原因：
+
+- `pip install -e .[rl,dev]` 裡的 `.` 代表目前資料夾
+- 你如果當時人在 `C:\Users\User`
+- pip 就會去安裝 `C:\Users\User`
+- 但真正的 `pyproject.toml` 在專案根目錄，不在那裡
+
+正確做法：
+
+```powershell
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+pip install -e ".[rl,dev]"
+```
+
+#### 問題 B：NumPy C-extension 載入失敗，看到 `cp314` 與 `_multiarray_umath`
+
+錯誤會長這樣：
+
+```text
+ImportError: Importing the numpy C-extensions failed
+...
+_multiarray_umath.cp314-win_amd64.pyd
+```
+
+這代表：
+
+- 你現在跑的是 Python 3.12
+- 但你使用到的虛擬環境裡 NumPy 混進了 `cp314` 的編譯檔
+- 也就是這個 venv 已經壞掉或裝混了
+
+你那次實際上用到的是：
+
+```text
+C:\Users\User\.venv\Scripts\python.exe
+```
+
+不是專案內的：
+
+```text
+C:\Users\User\Desktop\大四其他\library-escape-game\.venv\Scripts\python.exe
+```
+
+修法：
+
+```powershell
+deactivate
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+.\.venv\Scripts\Activate.ps1
+python -c "import sys; print(sys.executable)"
+python -m library_escape.gui.app
+```
+
+如果你懶得重新 activate，也可以直接指定專案內的 Python：
+
+```powershell
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+.\.venv\Scripts\python.exe -m library_escape.gui.app
+```
+
+#### 問題 C：Prompt 顯示 `(.venv)`，但其實不是專案內那個 venv
+
+這是一個很常見的誤解。
+
+PowerShell 左邊顯示：
+
+```text
+(.venv)
+```
+
+只代表你進了某個名叫 `.venv` 的虛擬環境。
+
+但如果你同時有：
+
+- `C:\Users\User\.venv`
+- `C:\Users\User\Desktop\大四其他\library-escape-game\.venv`
+
+它們顯示都一樣。
+
+所以最可靠的檢查方式永遠是：
+
+```powershell
+python -c "import sys; print(sys.executable)"
+```
+
+#### 問題 D：如果家目錄那個 `.venv` 已經壞掉，要不要刪掉
+
+如果你確認你不再需要 `C:\Users\User\.venv`，可以刪掉：
+
+```powershell
+Remove-Item -Recurse -Force C:\Users\User\.venv
+```
+
+這樣之後就比較不容易再誤用到它。
 
 ---
 
@@ -455,8 +605,10 @@ GUI 主檔：
 - 開 `Human vs Rule Enemy`
 - 開 `Human vs Enemy Checkpoint`
 - 開 `AI vs AI`
+- 選 `Collection` 或 `Escape`
 - 指定 `player` / `enemy` checkpoint
 - 開啟 replay 錄製
+- 如果 checkpoint 的訓練模式和目前播放的 `Game mode` 不一致，GUI 會先警告
 
 ### 7.2 Train
 
@@ -465,6 +617,7 @@ GUI 主檔：
 - 訓練 `enemy`
 - 訓練 `player`
 - 訓練 `selfplay`
+- 先選 `Collection` 或 `Escape`
 - 選 preset
 - 改 seed / timesteps / rounds / n-envs / device
 - 改 algorithm：
@@ -517,7 +670,8 @@ GUI 主檔：
 
 - 快速打開：
   - `env.yaml`
-  - `rewards.yaml`
+  - `rewards_collection.yaml`
+  - `rewards_escape.yaml`
   - `training.yaml`
   - `map.json`
   - 本文件
@@ -624,7 +778,7 @@ Replay 錄製與回放。
 
 ## 9. Action Space 要去哪裡改
 
-### 9.1 目前支援兩種 action mode
+### 9.1 目前 player / enemy 共用同一套 movement action space
 
 在 [`configs/env.yaml`](../configs/env.yaml)：
 
@@ -639,7 +793,15 @@ action:
 - `discrete`
 - `continuous`
 
+目前不管是玩家還是敵人，底層控制都是「移動向量」。
+
+- player RL agent 用這套 action
+- enemy RL agent 用這套 action
+- 規則式 AI 最後也會轉成同樣的移動向量
+
 ### 9.2 `discrete` 模式
+
+目前最常用，也是 GUI / Maskable PPO / self-play 預設使用的模式。
 
 目前是 9 個動作：
 
@@ -657,6 +819,22 @@ action:
 
 - [`library_escape/core/actions.py`](../library_escape/core/actions.py)
 
+實際映射就是：
+
+```python
+0: (0.0, 0.0)
+1: (0.0, -1.0)
+2: (1.0, -1.0)
+3: (1.0, 0.0)
+4: (1.0, 1.0)
+5: (0.0, 1.0)
+6: (-1.0, 1.0)
+7: (-1.0, 0.0)
+8: (-1.0, -1.0)
+```
+
+之後會再正規化成長度 1 的方向向量。
+
 ### 9.3 `continuous` 模式
 
 目前是 2D 向量：
@@ -670,16 +848,11 @@ action:
 
 - [`library_escape/core/actions.py`](../library_escape/core/actions.py)
 
-### 9.4 RL 環境的 action_space 在哪裡宣告
-
-- Gymnasium：[`library_escape/env/single_agent_env.py`](../library_escape/env/single_agent_env.py)
-- PettingZoo：[`library_escape/env/multi_agent_env.py`](../library_escape/env/multi_agent_env.py)
-
-### 9.5 什麼時候不能改成 continuous
+### 9.4 Maskable PPO 為什麼建議保持 discrete
 
 如果你要用：
 
-- `MaskablePPO`
+- `maskable_ppo`
 - `league_maskable_ppo`
 
 那就必須保持：
@@ -690,6 +863,41 @@ action:
 ```
 
 因為 invalid action masking 是做在離散動作上的。
+
+對應檔案：
+
+- [`library_escape/env/action_masking.py`](../library_escape/env/action_masking.py)
+
+目前 mask 的規則是：
+
+- `0` 停止永遠有效
+- 會立刻撞牆 / 邊界、導致幾乎不會動的方向會被 mask 掉
+- 如果主敵人被凍結，敵人的 mask 只會保留 `0`
+
+### 9.5 RL 環境的 `action_space` 在哪裡宣告
+
+- Gymnasium：[`library_escape/env/single_agent_env.py`](../library_escape/env/single_agent_env.py)
+- PettingZoo：[`library_escape/env/multi_agent_env.py`](../library_escape/env/multi_agent_env.py)
+
+### 9.6 你想改 action 時怎麼做
+
+#### 只想改模式或參數
+
+改：
+
+- [`configs/env.yaml`](../configs/env.yaml)
+
+#### 想改 action 定義本身
+
+改：
+
+- [`library_escape/core/actions.py`](../library_escape/core/actions.py)
+
+#### 想改 invalid action mask 規則
+
+改：
+
+- [`library_escape/env/action_masking.py`](../library_escape/env/action_masking.py)
 
 ---
 
@@ -717,43 +925,122 @@ observation:
 
 ### 10.3 敵人 observation 目前包含什麼
 
-`build_enemy_obs()` 目前包含：
+`build_enemy_obs()` 現在是：
 
-1. enemy x
-2. enemy y
-3. enemy facing x
-4. enemy facing y
-5. relative player x
-6. relative player y
-7. player 是否可見
-8. 剩餘 note 比例
-9. 剩餘 exam 比例
-10. 剩餘時間比例
-11. `wall_rays` 個牆面 ray
+1. `enemy.x / world.width`
+2. `enemy.y / world.height`
+3. `enemy.facing_x`
+4. `enemy.facing_y`
+5. `relative_player_x / world.width`
+6. `relative_player_y / world.height`
+7. `primary_visible_flag`
+8. `team_visible_flag`
+9. `visible_enemy_ratio`
+10. `nearest_ally_dx`
+11. `nearest_ally_dy`
+12. `remaining_note_ratio`
+13. `remaining_exam_ratio`
+14. `score_progress`
+15. `objective_progress`
+16. `time_remaining_ratio`
+17. `can_player_escape_flag`
+18. `player_in_escape_zone_flag`
+19. `distance_agents / max_map_distance`
+20. `distance_player_to_target / max_map_distance`
+21. `distance_player_to_escape / max_map_distance`
+22. `distance_enemy_to_escape / max_map_distance`
+23. `exit_lead`
+24. `collection_progress`
+25. `team_detection_cooldown`
+26. `primary_enemy_pause_fraction`
+27. `primary_threat_margin`
+28. `collection_mode_flag`
+29. `escape_mode_flag`
+30. `wall_rays[0]`
+31. `wall_rays[1]`
+32. `wall_rays[2]`
+33. `wall_rays[3]`
+34. `wall_rays[4]`
+35. `wall_rays[5]`
+36. `wall_rays[6]`
+37. `wall_rays[7]`
+
+幾個重要細節：
+
+- 如果 `partial_observability = true` 且敵方隊伍目前沒看到玩家，`relative_player_x / y` 會被寫成 `0.0`
+- `primary_visible_flag` 是「主敵人自己看沒看到玩家」
+- `team_visible_flag` 是「整個敵方隊伍有沒有任何一人看到玩家」
+- `visible_enemy_ratio` 是「目前看得到玩家的敵人數 / 全敵人數」
+- `nearest_ally_dx / dy` 讓主敵人知道最近支援敵人的相對位置
+- `score_progress` 與 `objective_progress` 分開放，讓 Collection 與 Escape 可以共用同一份 observation schema，但仍然學到不同成功指標
+- `exit_lead` 能讓敵人知道目前自己隊伍相對玩家是不是更接近出口，對守出口與包抄很重要
+- `collection_progress` / `team_detection_cooldown` / `primary_enemy_pause_fraction` 讓敵人知道玩家是不是正在收集，以及剛發生 spotting 後是否還在冷卻
+- `collection_mode_flag / escape_mode_flag` 讓同一個模型結構能跨模式訓練，不需要整個 action/obs pipeline 換掉
+- `wall_rays` 是 360 度等角度打出去的障礙距離，已經除上 `max_ray_distance`
 
 預設 `wall_rays = 8`，所以敵人 observation 維度預設是：
 
-- `10 + 8 = 18`
+- `29 + 8 = 37`
 
 ### 10.4 玩家 observation 目前包含什麼
 
-`build_player_obs()` 目前包含：
+`build_player_obs()` 現在是：
 
-1. player x
-2. player y
-3. player facing x
-4. player facing y
-5. relative enemy x
-6. relative enemy y
-7. enemy 是否可見
-8. nearest target dx
-9. nearest target dy
-10. 剩餘時間比例
-11. 是否已可逃脫
-12. coffee timer 比例
-13. enemy freeze timer 比例
-14. `player_enemy_rays` 個扇形 ray
-15. `wall_rays` 個牆面 ray
+1. `player.x / world.width`
+2. `player.y / world.height`
+3. `player.facing_x`
+4. `player.facing_y`
+5. `relative_nearest_enemy_x / world.width`
+6. `relative_nearest_enemy_y / world.height`
+7. `enemy_visible_to_player_flag`
+8. `player_visible_primary_flag`
+9. `visible_enemy_ratio`
+10. `nearest_enemy_distance / max_map_distance`
+11. `nearest_note_dx`
+12. `nearest_note_dy`
+13. `nearest_exam_dx`
+14. `nearest_exam_dy`
+15. `nearest_powerup_dx`
+16. `nearest_powerup_dy`
+17. `objective_progress`
+18. `score_progress`
+19. `time_remaining_ratio`
+20. `can_player_escape_flag`
+21. `player_in_escape_zone_flag`
+22. `collection_progress`
+23. `distance_player_to_target / max_map_distance`
+24. `distance_player_to_escape / max_map_distance`
+25. `exit_lead`
+26. `coffee_timer_ratio`
+27. `max_enemy_freeze_timer_ratio`
+28. `support_enemy_ratio`
+29. `team_detection_cooldown`
+30. `collection_mode_flag`
+31. `escape_mode_flag`
+32. `front_fan_ray[0]`
+33. `front_fan_ray[1]`
+34. `front_fan_ray[2]`
+35. `wall_rays[0]`
+36. `wall_rays[1]`
+37. `wall_rays[2]`
+38. `wall_rays[3]`
+39. `wall_rays[4]`
+40. `wall_rays[5]`
+41. `wall_rays[6]`
+42. `wall_rays[7]`
+
+幾個重要細節：
+
+- `relative_nearest_enemy_x / y` 只看「最近的敵人」，不是所有敵人的平均
+- 如果 `partial_observability = true` 且玩家視角下目前看不到敵人，這兩個相對座標會被寫成 `0.0`
+- `nearest_note / nearest_exam / nearest_powerup dx dy` 讓玩家能把主目標、加分道具與增益道具分開看
+- `objective_progress` 與 `score_progress` 分開放，讓 Collection 重點落在壓分 / 拉分，Escape 重點落在完成前置條件後衝出口
+- `collection_progress` 讓玩家知道自己是不是正在收集進度中
+- `exit_lead` 幫助玩家判斷現在是不是比敵人更有機會先到出口
+- `team_detection_cooldown` 幫助玩家知道剛被發現後是否仍在共享偵測冷卻
+- `collection_mode_flag / escape_mode_flag` 讓同一份 observation schema 能在兩種 Game mode 都使用
+- `front_fan_ray` 雖然參數名叫 `player_enemy_rays`，但目前實作其實是「玩家面朝方向前方扇形的距離 ray」，不是直接回傳敵人位置
+- `wall_rays` 一樣是已標準化的障礙距離
 
 預設：
 
@@ -762,7 +1049,7 @@ observation:
 
 所以玩家 observation 維度預設是：
 
-- `13 + 3 + 8 = 24`
+- `31 + 3 + 8 = 42`
 
 ### 10.5 你想改 observation 時怎麼做
 
@@ -795,169 +1082,332 @@ observation:
 
 ## 11. Reward 系統是怎麼算的
 
-Reward 設定檔：
-
-- [`configs/rewards.yaml`](../configs/rewards.yaml)
-
 Reward 程式碼：
 
 - [`library_escape/rewards/reward_fns.py`](../library_escape/rewards/reward_fns.py)
 
-### 11.1 目前 reward 的總體流程
+Reward 設定檔現在是**依 Game mode 分開**的：
+
+- Collection：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+- Escape：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
+
+下面這一整節講的是「強化學習環境的 reward」，不是畫面上的 HUD 分數。
+
+### 11.1 先講最重要的：現在 reward 是跟 Game mode 綁定的
+
+現在不是所有訓練都共用同一份 reward。
+
+實際規則是：
+
+- 你在 `Train` 或 CLI 選 `--game-mode collection`
+  - 系統會自動用 `configs/rewards_collection.yaml`
+- 你在 `Train` 或 CLI 選 `--game-mode escape`
+  - 系統會自動用 `configs/rewards_escape.yaml`
+
+這個 mapping 位置在：
+
+- [`library_escape/game_modes.py`](../library_escape/game_modes.py)
+
+也就是說：
+
+- `enemy + collection`
+  - 用 Collection reward
+- `player + collection`
+  - 用 Collection reward
+- `selfplay + collection`
+  - 用 Collection reward
+- `enemy + escape`
+  - 用 Escape reward
+- `player + escape`
+  - 用 Escape reward
+- `selfplay + escape`
+  - 用 Escape reward
+
+### 11.2 reward 的總體計算流程
 
 每次 `env.step(...)` 之後，系統會：
 
-1. 先收集本步事件 `events`
-2. 讀取 `prev_metrics`
-3. 讀取 `next_metrics`
-4. 分別計算：
-   - `player_reward`
-   - `enemy_reward`
-5. 再做：
-   - anti-exploit penalty
-   - zero-sum mixing
-   - reward clipping
+1. 收集這一步發生的事件 `events`
+2. 取出前一狀態 `prev_metrics`
+3. 取出下一狀態 `next_metrics`
+4. 先算出 `enemy_reward_pre_mix` 與 `player_reward_pre_mix`
+5. 如果完全沒有進展，兩邊都吃 `anti_exploit` 懲罰
+6. 用 `zero_sum_mix` 做部分零和混合
+7. 最後用 `clip_range` 做 clipping
 
-### 11.2 目前 enemy reward 權重
+visibility 相關不是直接用 raw 次數，而是先做：
 
-目前在 [`configs/rewards.yaml`](../configs/rewards.yaml)：
-
-```yaml
-enemy:
-  catch_player: 140.0
-  player_in_cone_per_step: 0.70
-  deny_escape_bonus: 45.0
-  time_penalty: -0.008
-  wall_penalty: -0.12
-  idle_penalty: -0.01
-  stalemate: -10.0
+```text
+frame_scale = 1 / rl_frame_skip
 ```
 
-enemy potential shaping 權重：
+所以 `primary_visible_steps`、`support_visible_steps` 這些都會先乘上 `frame_scale`，避免 `frame_skip` 不同時 reward 尺度飄掉。
 
-```yaml
-enemy:
-  potential:
-    enabled: true
-    capture_progress: 2.80
-    visibility_lock: 0.75
-    escape_pressure: 1.40
+### 11.3 共用公式是什麼
+
+不管是 Collection 還是 Escape，底層 reward engine 都是同一支：
+
+- [`library_escape/rewards/reward_fns.py`](../library_escape/rewards/reward_fns.py)
+
+共用公式可以簡化理解成：
+
+```text
+enemy_reward =
+  dense_enemy_terms
+  + terminal_enemy_terms
+  + potential_delta_enemy
+  + anti_exploit_if_no_progress
+  -> zero_sum_mix
+  -> clip
 ```
 
-### 11.3 目前 player reward 權重
-
-目前在 [`configs/rewards.yaml`](../configs/rewards.yaml)：
-
-```yaml
-player:
-  collect_note: 28.0
-  collect_exam: 42.0
-  collect_coffee: 8.0
-  collect_freeze: 10.0
-  escape: 160.0
-  seen_per_step: -0.35
-  caught: -160.0
-  time_bonus: 0.010
-  wall_penalty: -0.12
-  idle_penalty: -0.01
-  stalemate: -10.0
+```text
+player_reward =
+  dense_player_terms
+  + terminal_player_terms
+  + potential_delta_player
+  + anti_exploit_if_no_progress
+  -> zero_sum_mix
+  -> clip
 ```
 
-player potential shaping 權重：
+potential-based shaping 的共用形式是：
 
-```yaml
-player:
-  potential:
-    enabled: true
-    objective_progress: 2.50
-    target_navigation: 2.20
-    escape_navigation: 3.20
-    stealth_margin: 1.00
+```text
+potential_delta = gamma * Phi(next) - Phi(prev)
 ```
 
-### 11.4 全域 reward 參數
+其中核心量來自 `world.transition_metrics()`，像是：
+
+- `distance_agents`
+- `visible_enemy_ratio`
+- `objective_progress`
+- `distance_player_to_target`
+- `distance_player_to_escape`
+- `distance_enemy_to_escape`
+- `can_escape`
+- `exit_lead`
+
+### 11.4 enemy / player 的 potential 指標定義
+
+#### enemy potential
+
+```text
+Phi_enemy =
+  w_capture_pressure * capture_pressure
+  + w_team_visibility * team_visibility
+  + w_objective_denial * objective_denial
+  + w_exit_guard * exit_guard
+  + w_encirclement * encirclement
+```
+
+各項定義：
+
+- `capture_pressure`
+  - `1 - distance_agents / max_map_distance`
+- `team_visibility`
+  - `0.65 * player_visible_primary + 0.35 * visible_enemy_ratio`
+- `objective_denial`
+  - `1 - objective_progress`
+- `exit_guard`
+  - 只有在玩家已能逃脫，或目標進度至少 `75%` 時才啟用
+- `encirclement`
+  - `capture_pressure * visible_enemy_ratio`
+
+#### player potential
+
+```text
+Phi_player =
+  w_objective_progress * objective_progress
+  + target_weight * target_navigation
+  + w_threat_margin * threat_margin
+  + w_exit_window * exit_window
+```
+
+各項定義：
+
+- `objective_progress`
+  - 目前主目標完成比例
+- `target_navigation`
+  - 還沒達成逃脫條件時，朝下一個目標前進的程度
+- `escape_navigation`
+  - 已達逃脫條件後，朝出口前進的程度
+- `threat_margin`
+  - 離敵人越遠越高，但會被主敵人視野與團隊可見比例壓低
+- `exit_window`
+  - 玩家比敵人更接近出口時更高
+
+### 11.5 Collection 模式 reward 權重
+
+來源：
+
+- [`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
 
 ```yaml
 global:
   gamma: 0.99
-  clip_range: 250.0
-  zero_sum_mix: 0.10
+  clip_range: 320.0
+  zero_sum_mix: 0.18
+
+enemy:
+  catch_player: 0.0
+  lose_on_escape: 0.0
+  timeout_win: 0.0
+  detection_event_bonus: 8.0
+  primary_visible_per_step: 0.55
+  support_visible_per_step: 0.22
+  team_visible_ratio_per_step: 0.18
+  player_collect_note_penalty: -16.0
+  player_collect_exam_penalty: -26.0
+  player_collect_powerup_penalty: -5.0
+  player_objective_complete_penalty: -24.0
+  timeout_score_denial_bonus: 42.0
+  stalemate_score_denial_bonus: 28.0
+  time_penalty: -0.002
+  wall_penalty: -0.10
+  idle_penalty: -0.010
+  stalemate: -12.0
+  potential:
+    enabled: true
+    capture_pressure: 1.10
+    team_visibility: 1.55
+    objective_denial: 3.10
+    exit_guard: 0.0
+    encirclement: 0.95
+
+player:
+  collect_note: 14.0
+  collect_exam: 22.0
+  collect_coffee: 4.0
+  collect_freeze: 5.0
+  objective_complete_bonus: 24.0
+  detection_event_penalty: -8.0
+  escape: 0.0
+  caught: 0.0
+  timeout_loss: 0.0
+  timeout_score_progress_bonus: 42.0
+  stalemate_score_progress_bonus: 28.0
+  primary_seen_per_step: -0.40
+  support_seen_per_step: -0.16
+  multi_seen_penalty_per_step: -0.14
+  time_penalty: -0.004
+  wall_penalty: -0.10
+  idle_penalty: -0.010
+  stalemate: -12.0
+  potential:
+    enabled: true
+    objective_progress: 4.80
+    target_navigation: 2.10
+    escape_navigation: 0.0
+    threat_margin: 1.35
+    exit_window: 0.0
+
+anti_exploit:
+  no_progress_penalty: -0.02
 ```
 
-以及 anti-exploit：
+這份 reward 的設計意圖是：
+
+- 玩家不是在追求「逃出去」
+- 玩家是在追求「更高分、更有效率的收集、更少被看見」
+- 敵人不是在追求 strict win/lose
+- 敵人是在追求「壓分、拖慢收集、維持視野壓力」
+- reward 主要對齊 `score_progress`，不是只看 required objective 是否完成
+
+所以你會看到：
+
+- `escape / caught / timeout` 在 Collection 都是 `0.0`
+- `timeout_score_progress_bonus` / `timeout_score_denial_bonus` 這種 mode-specific shaping 比單純 terminal reward 更重要
+- `objective_complete_bonus` / `player_objective_complete_penalty` 只是在所有主目標收完那一刻提供清楚事件訊號
+- `collect_exam` 與 `player_collect_exam_penalty` 仍然高於 note，因為 exam 是高價值分數來源
+- `exit_guard` / `escape_navigation` 在 Collection 都是 `0.0`
+
+### 11.6 Escape 模式 reward 權重
+
+來源：
+
+- [`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 
 ```yaml
+global:
+  gamma: 0.99
+  clip_range: 320.0
+  zero_sum_mix: 0.22
+
+enemy:
+  catch_player: 220.0
+  lose_on_escape: -220.0
+  timeout_win: 48.0
+  detection_event_bonus: 0.0
+  primary_visible_per_step: 0.50
+  support_visible_per_step: 0.20
+  team_visible_ratio_per_step: 0.16
+  player_collect_note_penalty: -16.0
+  player_collect_exam_penalty: -6.0
+  player_collect_powerup_penalty: -5.0
+  player_objective_complete_penalty: -30.0
+  timeout_score_denial_bonus: 0.0
+  stalemate_score_denial_bonus: 0.0
+  time_penalty: -0.004
+  wall_penalty: -0.08
+  idle_penalty: -0.008
+  stalemate: -24.0
+  potential:
+    enabled: true
+    capture_pressure: 2.40
+    team_visibility: 1.55
+    objective_denial: 1.70
+    exit_guard: 2.50
+    encirclement: 1.75
+
+player:
+  collect_note: 14.0
+  collect_exam: 6.0
+  collect_coffee: 5.0
+  collect_freeze: 7.0
+  objective_complete_bonus: 32.0
+  detection_event_penalty: 0.0
+  escape: 220.0
+  caught: -220.0
+  timeout_loss: -48.0
+  timeout_score_progress_bonus: 0.0
+  stalemate_score_progress_bonus: 0.0
+  primary_seen_per_step: -0.35
+  support_seen_per_step: -0.14
+  multi_seen_penalty_per_step: -0.12
+  time_penalty: -0.004
+  wall_penalty: -0.08
+  idle_penalty: -0.008
+  stalemate: -24.0
+  potential:
+    enabled: true
+    objective_progress: 2.20
+    target_navigation: 1.80
+    escape_navigation: 4.00
+    threat_margin: 1.00
+    exit_window: 2.10
+
 anti_exploit:
-  no_progress_penalty: -0.01
+  no_progress_penalty: -0.02
 ```
 
-### 11.5 enemy reward 公式
+這份 reward 的設計意圖是：
 
-目前 enemy reward 大致是：
+- 玩家在追求真實贏局
+- 敵人在追求真實守成
+- terminal outcome 非常重要
+- 但同時保留 dense shaping，讓它們學得比較快
+- `objective_complete_bonus` 與 `player_objective_complete_penalty` 會在「剛好完成逃脫前置條件」那一刻明確推一把
+- `exit_guard` / `exit_window` 在 Escape 明顯比 Collection 更重，因為這個模式真的要學守出口與衝出口
 
-```text
-enemy_reward =
-  visibility_scale * player_in_cone_per_step
-  + enemy_wall_hits * wall_penalty
-  + time_penalty
-  + idle_penalty(if idle)
-  + catch_player(if caught)
-  + deny_escape_bonus(if timeout or stalemate)
-  + stalemate(if stalemate)
-  + potential_delta_enemy
-```
+所以你會看到：
 
-其中：
+- `escape = +220.0` / `caught = -220.0`
+- `catch_player = +220.0` / `lose_on_escape = -220.0`
+- `timeout_win = +48.0` / `timeout_loss = -48.0`
+- `exit_guard` / `escape_navigation` 都是啟用的
 
-```text
-potential_delta_enemy = gamma * Phi_enemy(next) - Phi_enemy(prev)
-```
-
-而：
-
-```text
-Phi_enemy =
-  capture_progress_weight * capture_progress
-  + visibility_lock_weight * player_visible
-  + escape_pressure_weight * escape_pressure
-```
-
-### 11.6 player reward 公式
-
-目前 player reward 大致是：
-
-```text
-player_reward =
-  note_count * collect_note
-  + exam_count * collect_exam
-  + coffee_count * collect_coffee
-  + freeze_count * collect_freeze
-  + visibility_scale * seen_per_step
-  + player_wall_hits * wall_penalty
-  + time_bonus
-  + idle_penalty(if idle)
-  + escape(if escaped)
-  + caught(if caught)
-  + stalemate(if stalemate)
-  + potential_delta_player
-```
-
-其中：
-
-```text
-potential_delta_player = gamma * Phi_player(next) - Phi_player(prev)
-```
-
-而：
-
-```text
-Phi_player =
-  objective_progress_weight * objective_progress
-  + target_or_escape_navigation_weight * navigation_progress
-  + stealth_margin_weight * stealth_margin
-```
-
-### 11.7 anti-exploit 怎麼算
+### 11.7 anti-exploit / zero-sum / clipping 怎麼算
 
 如果這一步 `events.progress_made == false`，那麼：
 
@@ -966,33 +1416,35 @@ player_reward += no_progress_penalty
 enemy_reward += no_progress_penalty
 ```
 
-### 11.8 zero-sum mixing 怎麼算
-
-如果 `zero_sum_mix > 0`，會做：
+然後會再做部分零和混合：
 
 ```text
 player_adv = player_reward - enemy_reward
 enemy_adv = enemy_reward - player_reward
 
-player_reward = (1 - mix) * player_reward + mix * player_adv
-enemy_reward = (1 - mix) * enemy_reward + mix * enemy_adv
+player_reward = (1 - zero_sum_mix) * player_reward + zero_sum_mix * player_adv
+enemy_reward = (1 - zero_sum_mix) * enemy_reward + zero_sum_mix * enemy_adv
 ```
 
-### 11.9 reward clipping 怎麼算
-
-最後如果 `clip_range > 0`：
+最後如果有設定 `clip_range`：
 
 ```text
 reward = clamp(reward, -clip_range, clip_range)
 ```
 
-### 11.10 如果我想改 reward
+### 11.8 如果我想改 reward
 
-#### 只改權重
+#### 只改 Collection 權重
 
 改：
 
-- [`configs/rewards.yaml`](../configs/rewards.yaml)
+- [`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+
+#### 只改 Escape 權重
+
+改：
+
+- [`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 
 #### 改 reward 算法本身
 
@@ -1008,11 +1460,49 @@ reward = clamp(reward, -clip_range, clip_range)
 
 因為 `transition_metrics()` 是 shaping 依賴的核心輸入。
 
+### 11.9 這一輪 reward / curriculum / observation 為什麼這樣重設
+
+這一輪不是只憑直覺調數字，而是對齊了幾個 RL 常見做法：
+
+- Potential-based reward shaping
+  - dense shaping 盡量寫成 potential difference，避免直接亂加 reward 改掉最優策略。
+  - 來源：https://wordpress.andrewng.org/index.php/publication/policy-invariance-under-reward-transformations-theory-and-application-to-reward-shaping/
+- Self-play 與自動課程式對抗
+  - `Escape` 需要追擊方與逃脫方一起變強，所以 opponent curriculum 與 self-play 參考了 OpenAI Hide-and-Seek 這種會因對手變強而逐漸長出新策略的做法。
+  - 來源：https://openai.com/index/emergent-tool-use/
+- 歷史對手池 / league 式訓練
+  - 為了避免只 overfit 最新對手，self-play 會混合最新 checkpoint、歷史 checkpoint、heuristic baseline，這個精神接近 AlphaStar 的 league training。
+  - 來源：https://www.nature.com/articles/s41586-019-1724-z
+- PPO-family 在多人合作/對抗問題中的強 baseline 地位
+  - 目前主力演算法保留在 `MaskablePPO`，是因為 PPO-family 在 cooperative / mixed multi-agent 任務上很常被當成實用基線；這個方向和 MAPPO 論文的實務結論一致。
+  - 來源：https://arxiv.org/abs/2103.01955
+
+這些來源最後落成了幾個實際設計決定：
+
+- Collection 與 Escape 用兩份不同 reward 檔，而不是硬共用一套權重
+- observation 同時提供 `objective_progress` 與 `score_progress`，讓同一個 obs schema 能跨模式，但 reward 仍然 mode-aware
+- action space 先維持相同的離散 9 動作 + invalid-action mask，避免模式切換就讓 checkpoint 完全不相容
+- `fast / balanced / quality` 用 mode-aware 的支援敵人數量 curriculum，讓 Escape 不會一開始就被多敵人壓死，同時又保留後期學包抄、守出口、協同圍捕的空間
+
+這一輪平衡時，我另外做了一個 heuristic player vs rule-based enemy 的 10-seed smoke audit 當 sanity check：
+
+- Collection：平均 `38.8` 分，平均 `4.1` note / `0.5` exam，全部在 `time_expired` 收束
+- Escape：平均 `10.8` 分，`5` 次 `caught`、`5` 次 `time_expired`
+
+這不是正式 benchmark，也不是訓練後的最終強度；它只是用來確認兩個模式目前不會一邊完全碾壓另一邊，並且 Escape 會同時出現「被抓到」與「拖到超時」兩種失敗型態，而不是單一崩壞模式。
+
 ---
 
 ## 12. 環境參數要去哪裡改
 
 主要改 [`configs/env.yaml`](../configs/env.yaml)。
+
+注意：
+
+- `configs/env.yaml` 是 base profile
+- 真正進入 `Collection` 或 `Escape` 時，還會再經過 [`library_escape/game_modes.py`](../library_escape/game_modes.py) 的 mode-specific 覆蓋
+- 所以如果你想改「兩個模式共用的底層物理 / 觀測 / action / randomization」，優先改 `env.yaml`
+- 如果你想改「Collection 預設多難」或「Escape 預設多難」，優先改 `game_modes.py`
 
 ### 12.1 timing
 
@@ -1042,7 +1532,7 @@ world:
   capture_radius: 0.55
   interaction_radius: 1.10
   player_speed: 4.20
-  enemy_speed: 3.60
+  enemy_speed: 3.70
   coffee_speed_multiplier: 1.50
   coffee_duration_seconds: 15.0
   freeze_duration_seconds: 5.0
@@ -1065,7 +1555,7 @@ world:
 enemy:
   vision_range: 6.0
   vision_angle_deg: 70.0
-  chase_speed_multiplier: 1.10
+  chase_speed_multiplier: 1.14
   reaction_interval_seconds: 0.20
 ```
 
@@ -1075,7 +1565,26 @@ enemy:
 - 視野角度
 - 看見玩家時加速倍率
 
-### 12.4 collectibles
+### 12.4 enemy_team
+
+```yaml
+enemy_team:
+  support_count: 3
+  support_speed_scale: 0.98
+  support_vision_range_scale: 0.95
+  support_vision_angle_scale: 0.94
+  shared_last_seen: true
+  shared_detection_cooldown_seconds: 1.00
+```
+
+這一段控制：
+
+- 場上總共有幾個支援敵人
+- 支援敵人的速度與視野要比主敵人弱多少
+- 敵方是否共享最後目擊位置
+- 經典規則下多敵人共同看到玩家時，扣秒的共享冷卻
+
+### 12.5 collectibles
 
 ```yaml
 collectibles:
@@ -1087,15 +1596,15 @@ collectibles:
 
 你可以直接改場上道具數量。
 
-### 12.5 observation
+### 12.6 observation
 
 前面第 10 節已經詳細說明。
 
-### 12.6 action
+### 12.7 action
 
 前面第 9 節已經詳細說明。
 
-### 12.7 randomization
+### 12.8 randomization
 
 ```yaml
 randomization:
@@ -1105,6 +1614,7 @@ randomization:
   enemy_speed_scale_range: [0.95, 1.08]
   vision_range_scale_range: [0.92, 1.08]
   vision_angle_jitter_deg: 8.0
+  support_count_range: [2, 4]
 ```
 
 這塊是為了訓練泛化能力。
@@ -1115,6 +1625,7 @@ randomization:
 - 敵人出生位置不同
 - 移速輕微變動
 - 視野距離與角度輕微變動
+- 支援敵人數量輕微變動
 
 ### 12.8 ui
 
@@ -1277,16 +1788,16 @@ ui:
 
 ```yaml
 single_agent:
-  algorithm: ppo
-  total_timesteps: 300000
+  algorithm: maskable_ppo
+  total_timesteps: 360000
   n_envs: 8
-  learning_rate: 0.00025
+  learning_rate: 0.0002
   n_steps: 1024
   batch_size: 256
   gamma: 0.99
   gae_lambda: 0.95
-  clip_range: 0.2
-  ent_coef: 0.02
+  clip_range: 0.18
+  ent_coef: 0.015
   vf_coef: 0.5
 ```
 
@@ -1294,17 +1805,17 @@ single_agent:
 
 ```yaml
 self_play:
-  algorithm: league_ppo
-  rounds: 4
-  timesteps_per_round: 120000
+  algorithm: league_maskable_ppo
+  rounds: 5
+  timesteps_per_round: 140000
   n_envs: 4
-  learning_rate: 0.00025
+  learning_rate: 0.0002
   n_steps: 1024
   batch_size: 256
   gamma: 0.99
   gae_lambda: 0.95
-  clip_range: 0.2
-  ent_coef: 0.02
+  clip_range: 0.18
+  ent_coef: 0.015
   vf_coef: 0.5
 ```
 
@@ -1316,7 +1827,7 @@ vec_normalize:
   norm_obs: true
   norm_reward: true
   clip_obs: 10.0
-  clip_reward: 10.0
+  clip_reward: 15.0
 ```
 
 ### 16.4 你最常需要改的訓練參數
@@ -1381,10 +1892,10 @@ self-play：
 single_agent:
   opponent_curriculum:
     use_history_pool: true
-    max_history_pool: 8
-    random_weight: 0.20
-    heuristic_weight: 0.60
-    history_weight: 0.20
+    max_history_pool: 12
+    random_weight: 0.15
+    heuristic_weight: 0.45
+    history_weight: 0.40
 ```
 
 意思：
@@ -1401,11 +1912,11 @@ single_agent:
 ```yaml
 self_play:
   opponent_curriculum:
-    bootstrap_random_weight: 0.20
-    bootstrap_heuristic_weight: 0.80
-    latest_weight: 0.50
-    historical_weight: 0.50
-    max_history_pool: 6
+    bootstrap_random_weight: 0.15
+    bootstrap_heuristic_weight: 0.85
+    latest_weight: 0.35
+    historical_weight: 0.65
+    max_history_pool: 8
 ```
 
 意思：
@@ -1433,44 +1944,45 @@ python -m library_escape.gui.app
 
 1. 進 `Train`
 2. 選 mode
-3. 選 preset
-4. 選 algorithm
-5. 按 `Start Training`
+3. 選 game mode
+4. 選 preset
+5. 選 algorithm
+6. 按 `Start Training`
 
 ### 18.2 CLI：訓練敵人
 
 ```powershell
-python -m library_escape.train.train_enemy
+python -m library_escape.train.train_enemy --game-mode escape
 ```
 
 快速測試版：
 
 ```powershell
-python -m library_escape.train.train_enemy --preset fast
+python -m library_escape.train.train_enemy --game-mode escape --preset fast
 ```
 
 自訂 timesteps / envs：
 
 ```powershell
-python -m library_escape.train.train_enemy --timesteps 300000 --n-envs 8
+python -m library_escape.train.train_enemy --game-mode escape --timesteps 300000 --n-envs 8
 ```
 
 ### 18.3 CLI：訓練玩家
 
 ```powershell
-python -m library_escape.train.train_player
+python -m library_escape.train.train_player --game-mode collection
 ```
 
 ### 18.4 CLI：Self-play
 
 ```powershell
-python -m library_escape.train.train_selfplay
+python -m library_escape.train.train_selfplay --game-mode escape
 ```
 
 自訂 rounds / timesteps-per-round：
 
 ```powershell
-python -m library_escape.train.train_selfplay --rounds 4 --timesteps-per-round 120000
+python -m library_escape.train.train_selfplay --game-mode escape --rounds 4 --timesteps-per-round 120000
 ```
 
 ### 18.5 CLI：Maskable PPO
@@ -1479,14 +1991,14 @@ PowerShell 版本建議這樣寫：
 
 ```powershell
 $json = '{"train":{"algorithm":"maskable_ppo"}}'
-python -m library_escape.train.train_enemy --preset balanced --overrides-json $json
+python -m library_escape.train.train_enemy --game-mode escape --preset balanced --overrides-json $json
 ```
 
 self-play 的 maskable：
 
 ```powershell
 $json = '{"train":{"algorithm":"league_maskable_ppo"}}'
-python -m library_escape.train.train_selfplay --preset balanced --overrides-json $json
+python -m library_escape.train.train_selfplay --game-mode collection --preset balanced --overrides-json $json
 ```
 
 ### 18.6 CLI：外部 MAPPO recipe
@@ -1570,10 +2082,13 @@ python -m library_escape.train.train_selfplay --preset balanced --overrides-json
 - `wall_penalty`
 - `idle_penalty`
 - `no_progress_penalty`
-- `capture_progress`
+- `capture_pressure`
+- `objective_denial`
+- `exit_guard`
 - `target_navigation`
 - `escape_navigation`
-- `escape_pressure`
+- `threat_margin`
+- `exit_window`
 
 ---
 
@@ -1750,7 +2265,8 @@ python scripts\eval_elo.py --root checkpoints --episodes 8 --output checkpoints\
 
 ### 24.1 改 reward 權重
 
-- [`configs/rewards.yaml`](../configs/rewards.yaml)
+- Collection：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+- Escape：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 
 ### 24.2 改 reward 算法
 
@@ -1831,17 +2347,18 @@ python -m library_escape.gui.app
 ### 26.2 想先做一輪快訓練
 
 ```powershell
-python -m library_escape.train.train_enemy --preset fast
+python -m library_escape.train.train_enemy --game-mode escape --preset fast
 ```
 
 或直接 GUI 的 `Train`。
 
 ### 26.3 想調 reward
 
-1. 改 [`configs/rewards.yaml`](../configs/rewards.yaml)
-2. 跑 `fast` preset
-3. 看 Results / TensorBoard
-4. 再決定下一輪調整
+1. Collection 想調分數壓力就改 [`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+2. Escape 想調勝負對抗就改 [`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
+3. 跑 `fast` preset
+4. 看 Results / TensorBoard
+5. 再決定下一輪調整
 
 ### 26.4 想調 observation / action
 
@@ -1863,7 +2380,271 @@ python -m library_escape.train.train_enemy --preset fast
 
 ---
 
-## 27. 最後總結
+## 27. 現在遊戲規則、勝負條件、分數與道具效果
+
+### 27.1 現在正式有兩個 Game mode
+
+現在 Python 版遊戲的使用者規則分成：
+
+- `Collection`
+  - 比較接近原本 C++ 主線的收集 / 計分 / 躲偵測
+- `Escape`
+  - 比較偏抓捕 / 逃脫 / 明確勝負
+
+規則切換入口：
+
+- [`library_escape/play/presets.py`](../library_escape/play/presets.py)
+- [`library_escape/game_modes.py`](../library_escape/game_modes.py)
+
+補充：
+
+- 舊的 `classic` 只是 `Collection` 的相容別名
+- 舊的 `rl` 只是 `Escape` 的相容別名
+- 使用者現在應該只看 `Collection / Escape`
+
+### 27.2 Collection 規則現在是什麼
+
+Collection 目前的重點規則是：
+
+- 敵人固定 `5` 人
+  - `1` 個主敵人
+  - `4` 個支援巡邏敵人
+- 遊戲時間預設 `60` 秒
+- 玩家主要目標是盡量收集桌上的 `note` / `exam`
+- 沒有真正的「逃出口即獲勝」條件
+- `can_player_escape()` 在 Collection 會直接回傳 `False`
+- 所以 code-level outcome 不會出現 `escaped`
+- 敵人看到玩家時：
+  - 直接扣玩家剩餘時間 `8` 秒
+  - 只有這次真正觸發偵測事件的那個敵人會進入 `1.2` 秒 detection pause
+  - 其他敵人不會一起被定住
+  - 同一次 spotting episode 不會一直重複刷新 pause timer
+  - 團隊共享偵測冷卻 `1` 秒，避免同一瞬間或短時間內被重複狂扣秒
+- Collection 不會啟用「看到就追擊」的 Escape 式追逐規則
+- `coffee` 在 Collection 的效果是加快收集速度
+  - `coffee_collection_multiplier = 1.5`
+- `freeze` 會讓全部敵人凍結 `5` 秒
+- reset 後有短暫開場保護
+  - `Collection` 預設 `1.0` 秒
+  - `Escape` 預設 `0.75` 秒
+  - 這段時間敵人不會偵測玩家，避免一出生第一瞬間就被扣秒
+- 收集不是瞬間完成
+  - 需要 `0.85` 秒收集時間
+  - 人類玩家要按住 `E`
+  - AI baseline 也會停住並持續收集
+
+從一般遊玩視角來看，Collection 比較像：
+
+- 玩家想辦法在時間被扣光前拿到更高分
+- 敵人想辦法多次看到玩家，拖慢收集並消耗時間
+
+### 27.3 Collection 到底怎麼算贏
+
+這裡要特別講清楚：
+
+- Collection 不是嚴格的二元勝負模式
+- 它比較像「計分生存挑戰」
+- code-level 的回合結束通常是：
+  - `time_expired`
+  - 或 `stalemate`
+
+所以：
+
+- 對玩家來說
+  - 一般意義上的「玩得好」是：
+    - 在時間結束前收更多 `note` / `exam`
+    - 拿到更高 `score_value`
+    - 少被敵人看到
+- 對敵人來說
+  - 一般意義上的「防守成功」是：
+    - 讓玩家時間快速被扣光
+    - 壓低玩家最終分數
+
+換句話說，Collection 沒有單獨的 `player_win = true` 或 `enemy_win = true` 旗標；它是用時間與分數來表現成敗。
+
+### 27.4 Escape 規則現在是什麼
+
+Escape 目前的重點規則是：
+
+- 預設敵人 `2` 人
+  - `1` 個主敵人
+  - `1` 個支援巡邏敵人
+- 遊戲時間預設 `60` 秒
+- 玩家要先完成主目標，才能逃脫
+- 預設主目標是：
+  - `note` 必須全部收完
+  - `exam` 預設不是必須，但可以在 [`configs/env.yaml`](../configs/env.yaml) 裡打開
+- 玩家達成主目標後，還要真正走進出口區域，才算逃脫成功
+- 任一敵人只要與玩家距離小於等於 `capture_radius = 0.55`，就算抓到玩家
+- `coffee` 在 Escape 的效果是加快移動速度
+  - `coffee_speed_multiplier = 1.50`
+  - 持續 `15` 秒
+- `freeze` 會讓全部敵人凍結 `5` 秒
+- 收集一樣不是瞬間完成
+  - 不需要按 `E`
+  - 但仍然必須在互動範圍內停留到 `0.85` 秒進度滿，才算真的收集成功
+- reset 後有短暫開場保護
+  - `Escape` 預設 `0.75` 秒
+  - 這段時間敵人不會立刻偵測或追擊玩家
+- Escape 會啟用「看到玩家就追擊」規則
+
+### 27.5 Escape 模式怎麼算玩家贏、敵人贏
+
+#### 玩家贏
+
+滿足下面兩件事：
+
+1. 已完成逃脫前置條件
+   - 預設是所有 `note` 收完
+   - 如果你把 `require_all_exams_to_escape = true` 打開，那就還要把 `exam` 也收完
+2. 玩家真的走進 `escape_zone`
+
+這時：
+
+- `events.player_escaped = True`
+- `world.outcome = "escaped"`
+- player reward 會拿到 `escape = +220.0`
+- enemy reward 會吃到 `lose_on_escape = -220.0`
+
+#### 敵人贏
+
+最直接的情況是：
+
+- 任一敵人碰到玩家到抓捕半徑內
+
+這時：
+
+- `events.player_caught = True`
+- `world.outcome = "caught"`
+- enemy reward 會拿到 `catch_player = +220.0`
+- player reward 會吃到 `caught = -220.0`
+
+此外在 Escape 訓練視角裡，下面兩種也可以視為「玩家失敗、敵方達成防守」：
+
+- `time_expired`
+- `stalemate`
+
+其中 `time_expired` 目前對 reward 的影響是：
+
+- enemy: `timeout_win = +48.0`
+- player: `timeout_loss = -48.0`
+
+### 27.6 訓練時到底在學什麼
+
+這件事情要同時看：
+
+- `Train mode`
+  - `enemy` / `player` / `selfplay`
+- `Game mode`
+  - `collection` / `escape`
+
+例如：
+
+- `enemy + collection`
+  - 練的是 Collection 規則下的敵人，目標是更會壓分、更會維持視野壓力
+- `player + collection`
+  - 練的是 Collection 規則下的玩家，目標是更會偷收集、更會走位保分
+- `enemy + escape`
+  - 練的是 Escape 規則下的敵人，目標是更會追擊、包夾、守出口
+- `player + escape`
+  - 練的是 Escape 規則下的玩家，目標是更會完成主目標並成功逃脫
+- `selfplay + collection`
+  - 雙方都在學 Collection 規則下的得分與壓分對抗
+- `selfplay + escape`
+  - 雙方都在學 Escape 規則下的圍捕與逃脫對抗
+
+### 27.7 訓練完之後應該去哪個模式播放
+
+原則很簡單：
+
+- Collection 訓練出的 checkpoint，就放回 Collection 播放
+- Escape 訓練出的 checkpoint，就放回 Escape 播放
+
+目前 checkpoint 目錄也會直接分開：
+
+- `checkpoints/enemy/collection/...`
+- `checkpoints/enemy/escape/...`
+- `checkpoints/player_single/collection/...`
+- `checkpoints/player_single/escape/...`
+- `checkpoints/selfplay/collection/...`
+- `checkpoints/selfplay/escape/...`
+
+GUI 也會把 `game_mode` 寫進 `training_summary.json` 與 model metadata，播放時如果模式不一致，會先警告你。
+
+### 27.8 分數怎麼算
+
+畫面上的 `score_value` 現在是：
+
+```text
+score_value = note_count * 8 + exam_count * 12
+```
+
+對應程式：
+
+- [`library_escape/core/world.py`](../library_escape/core/world.py)
+
+也就是：
+
+- 每拿到一個 `note`，分數加 `8`
+- 每拿到一個 `exam`，分數加 `12`
+- `coffee` 和 `freeze` 不會增加 `score_value`
+
+補充：
+
+- `world.score` 內部會記錄各種 collectible 的收集數量
+- 但 HUD 上真正顯示的加權總分，目前只看 `note` 與 `exam`
+
+### 27.9 道具效果現在是什麼
+
+#### `note`
+
+- 主目標道具
+- 會增加 `score_value`
+- 在 Escape 規則裡通常是逃脫必要條件
+
+#### `exam`
+
+- 次主目標道具
+- 會增加 `score_value`
+- Escape 規則裡預設不是逃脫必要條件
+- 但可以在 [`configs/env.yaml`](../configs/env.yaml) 把 `require_all_exams_to_escape` 改成 `true`
+
+#### `coffee`
+
+- `Collection`
+  - 提升收集速度
+- `Escape`
+  - 提升移動速度
+
+#### `freeze`
+
+- 讓所有敵人進入凍結狀態
+- 目前持續 `5` 秒
+
+### 27.10 地圖與生成規則現在是什麼
+
+目前預設不是程序化生成地圖，而是固定讀：
+
+- [`configs/map.json`](../configs/map.json)
+
+裡面的內容包括：
+
+- player spawn
+- 主敵人 spawn
+- 支援敵人 spawn
+- 障礙物 / 桌子 / 書櫃
+- collectible spawn 點
+- escape zone
+
+也就是說：
+
+- 地圖布局本身預設是固定的
+- RL 訓練主要隨機化的是速度、視野、支援敵人數量等參數
+- 不是每回合重生一張完全不同的新地圖
+
+---
+
+## 28. 最後總結
 
 你現在可以把這個 repo 理解成：
 

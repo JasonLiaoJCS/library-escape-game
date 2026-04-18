@@ -48,4 +48,7 @@ class EnemyState(CharacterState):
     vision: VisionCone = field(default_factory=lambda: VisionCone(range_cells=6.0, angle_deg=70.0))
     patrol_index: int = 0
     freeze_timer: float = 0.0
+    detection_pause_timer: float = 0.0
     last_seen_player: tuple[float, float] | None = None
+    patrol_route: tuple[tuple[float, float], ...] = field(default_factory=tuple)
+    is_primary: bool = True

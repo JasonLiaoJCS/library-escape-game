@@ -10,7 +10,7 @@ from typing import Callable
 from ..agents.ppo_agent import SB3PolicyController
 from ..agents.rule_based_enemy import RuleBasedEnemyController
 from ..agents.rule_based_player import HeuristicPlayerController
-from ..config import load_env_config
+from ..game_modes import build_game_mode_env_config, normalize_game_mode
 from ..core.world import World
 from .registry import ModelCandidate, discover_saved_models
 
@@ -76,7 +76,13 @@ def play_match(
     episodes: int,
     seeds: list[int] | None = None,
 ) -> dict[str, float | int]:
-    env_config = load_env_config()
+    candidate_modes = {
+        normalize_game_mode(candidate.game_mode)
+        for candidate in (player_candidate, enemy_candidate)
+        if candidate is not None
+    }
+    game_mode = candidate_modes.pop() if len(candidate_modes) == 1 else "escape"
+    env_config = build_game_mode_env_config(game_mode=game_mode, manual_collect_required=False, interactive=False)
     player_controller = _make_player_controller(player_candidate, env_config)
     enemy_controller = _make_enemy_controller(enemy_candidate, env_config)
     seeds = seeds or list(range(episodes))

@@ -17,6 +17,7 @@ class ModelCandidate:
     summary_path: Path
     mode: str
     algorithm: str
+    game_mode: str
 
 
 def _resolve_model_path(raw_path: str | None, summary_dir: Path) -> Path | None:
@@ -48,6 +49,7 @@ def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
             continue
 
         algorithm = str(payload.get("algorithm", payload.get("train_config", {}).get("algorithm", "ppo")))
+        game_mode = str(payload.get("game_mode", payload.get("env_config", {}).get("world", {}).get("game_mode", "escape")))
         summary_dir = summary_path.parent
         run_label = summary_dir.name
 
@@ -63,6 +65,7 @@ def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
                         summary_path=summary_path,
                         mode=mode,
                         algorithm=algorithm,
+                        game_mode=game_mode,
                     )
                 )
         elif mode == "single_agent_player":
@@ -77,6 +80,7 @@ def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
                         summary_path=summary_path,
                         mode=mode,
                         algorithm=algorithm,
+                        game_mode=game_mode,
                     )
                 )
         elif mode in {"self_play", "self_play_mappo_recipe"}:
@@ -92,6 +96,7 @@ def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
                         summary_path=summary_path,
                         mode=mode,
                         algorithm=algorithm,
+                        game_mode=game_mode,
                     )
                 )
             if enemy_model and enemy_model.exists():
@@ -104,6 +109,7 @@ def discover_saved_models(root: Path | None = None) -> list[ModelCandidate]:
                         summary_path=summary_path,
                         mode=mode,
                         algorithm=algorithm,
+                        game_mode=game_mode,
                     )
                 )
 

@@ -1,14 +1,14 @@
 single_agent:
-  algorithm: ppo
-  total_timesteps: 300000
+  algorithm: maskable_ppo
+  total_timesteps: 360000
   n_envs: 8
-  learning_rate: 0.00025
+  learning_rate: 0.0002
   n_steps: 1024
   batch_size: 256
   gamma: 0.99
   gae_lambda: 0.95
-  clip_range: 0.2
-  ent_coef: 0.02
+  clip_range: 0.18
+  ent_coef: 0.015
   vf_coef: 0.5
   device: auto
   enemy_checkpoint_dir: checkpoints/enemy
@@ -16,57 +16,57 @@ single_agent:
   eval_freq: 8192
   checkpoint_freq: 8192
   log_interval_seconds: 1.0
-  eval_episodes: 10
+  eval_episodes: 12
   resume_path: ""
   policy:
-    hidden_sizes: [256, 256]
+    hidden_sizes: [256, 256, 128]
     activation_fn: tanh
   vec_normalize:
     enabled: true
     norm_obs: true
     norm_reward: true
     clip_obs: 10.0
-    clip_reward: 10.0
+    clip_reward: 15.0
   opponent_curriculum:
     use_history_pool: true
-    max_history_pool: 8
-    random_weight: 0.20
-    heuristic_weight: 0.60
-    history_weight: 0.20
+    max_history_pool: 12
+    random_weight: 0.15
+    heuristic_weight: 0.45
+    history_weight: 0.40
 
 self_play:
-  algorithm: league_ppo
-  rounds: 4
-  timesteps_per_round: 120000
+  algorithm: league_maskable_ppo
+  rounds: 5
+  timesteps_per_round: 140000
   n_envs: 4
-  learning_rate: 0.00025
+  learning_rate: 0.0002
   n_steps: 1024
   batch_size: 256
   gamma: 0.99
   gae_lambda: 0.95
-  clip_range: 0.2
-  ent_coef: 0.02
+  clip_range: 0.18
+  ent_coef: 0.015
   vf_coef: 0.5
-  opponent_pool_size: 6
+  opponent_pool_size: 8
   checkpoint_root_dir: checkpoints/selfplay
   eval_freq: 8192
   checkpoint_freq: 8192
   log_interval_seconds: 1.0
   policy:
-    hidden_sizes: [256, 256]
+    hidden_sizes: [256, 256, 128]
     activation_fn: tanh
   vec_normalize:
     enabled: true
     norm_obs: true
     norm_reward: true
     clip_obs: 10.0
-    clip_reward: 10.0
+    clip_reward: 15.0
   opponent_curriculum:
-    bootstrap_random_weight: 0.20
-    bootstrap_heuristic_weight: 0.80
-    latest_weight: 0.50
-    historical_weight: 0.50
-    max_history_pool: 6
+    bootstrap_random_weight: 0.15
+    bootstrap_heuristic_weight: 0.85
+    latest_weight: 0.35
+    historical_weight: 0.65
+    max_history_pool: 8
     mappo_recipe:
       enabled: false
       external_command: ""
@@ -79,14 +79,14 @@ evaluation:
 presets:
   fast:
     single_agent:
-      total_timesteps: 120000
+      total_timesteps: 140000
       n_envs: 4
       eval_freq: 4096
       checkpoint_freq: 4096
       n_steps: 768
     self_play:
       rounds: 2
-      timesteps_per_round: 60000
+      timesteps_per_round: 70000
       n_envs: 2
       eval_freq: 4096
       checkpoint_freq: 4096
@@ -96,24 +96,46 @@ presets:
         rl_frame_skip: 6
       randomization:
         enabled: true
+    env_overrides_by_game_mode:
+      collection:
+        enemy_team:
+          support_count: 3
+        randomization:
+          support_count_range: [2, 4]
+      escape:
+        enemy_team:
+          support_count: 1
+        randomization:
+          support_count_range: [1, 1]
   balanced:
     single_agent:
-      total_timesteps: 300000
+      total_timesteps: 360000
       n_envs: 8
       eval_freq: 8192
       checkpoint_freq: 8192
     self_play:
-      rounds: 4
-      timesteps_per_round: 120000
+      rounds: 5
+      timesteps_per_round: 140000
       n_envs: 4
       eval_freq: 8192
       checkpoint_freq: 8192
     env_overrides:
       randomization:
         enabled: true
+    env_overrides_by_game_mode:
+      collection:
+        enemy_team:
+          support_count: 4
+        randomization:
+          support_count_range: [3, 4]
+      escape:
+        enemy_team:
+          support_count: 1
+        randomization:
+          support_count_range: [1, 2]
   quality:
     single_agent:
-      total_timesteps: 600000
+      total_timesteps: 720000
       n_envs: 12
       n_steps: 1536
       batch_size: 384
@@ -121,7 +143,7 @@ presets:
       checkpoint_freq: 12288
     self_play:
       rounds: 6
-      timesteps_per_round: 180000
+      timesteps_per_round: 200000
       n_envs: 6
       n_steps: 1536
       batch_size: 384
@@ -129,6 +151,17 @@ presets:
       checkpoint_freq: 12288
     env_overrides:
       timing:
-        rl_frame_skip: 4
+        rl_frame_skip: 3
       randomization:
         enabled: true
+    env_overrides_by_game_mode:
+      collection:
+        enemy_team:
+          support_count: 4
+        randomization:
+          support_count_range: [3, 4]
+      escape:
+        enemy_team:
+          support_count: 2
+        randomization:
+          support_count_range: [1, 3]

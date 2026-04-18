@@ -18,7 +18,9 @@ from ..agents.rule_based_enemy import RandomEnemyController, RuleBasedEnemyContr
 from ..agents.rule_based_player import HeuristicPlayerController, MixedPlayerController, RandomPlayerController
 from ..config import load_env_config, load_training_config, resolve_repo_path
 from ..eval.registry import discover_saved_models
+from ..env.obs_builder import ObsBuilder
 from ..env.single_agent_env import LibraryEscapeEnv
+from ..game_modes import build_game_mode_env_config, normalize_game_mode
 
 
 def deep_update(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +61,9 @@ def apply_preset(
         return env_config, train_config
     updated_train = deep_update(train_config, preset.get(mode_key, {}))
     updated_env = deep_update(env_config, preset.get("env_overrides", {}))
+    game_mode = normalize_game_mode(updated_env.get("world", {}).get("game_mode", "escape"))
+    updated_env = deep_update(updated_env, preset.get("env_overrides_by_game_mode", {}).get(game_mode, {}))
+    updated_train = deep_update(updated_train, preset.get("train_overrides_by_game_mode", {}).get(game_mode, {}))
     return updated_env, updated_train
 
 
@@ -148,8 +153,9 @@ def _cached_factory(builder: Callable[[], object]) -> Callable[[], object]:
     return _factory
 
 
-def discover_role_model_paths(role: str, max_items: int = 8) -> list[Path]:
-    candidates = [item for item in discover_saved_models() if item.role == role]
+def discover_role_model_paths(role: str, game_mode: str, max_items: int = 8) -> list[Path]:
+    normalized_mode = normalize_game_mode(game_mode)
+    candidates = [item for item in discover_saved_models() if item.role == role and normalize_game_mode(item.game_mode) == normalized_mode]
     paths: list[Path] = []
     for candidate in candidates:
         if candidate.model_path.exists():
@@ -159,12 +165,40 @@ def discover_role_model_paths(role: str, max_items: int = 8) -> list[Path]:
     return paths
 
 
+def _expected_obs_dim(role: str, env_config: dict[str, Any]) -> int:
+    builder = ObsBuilder(env_config)
+    return builder.player_obs_dim() if role == "player" else builder.enemy_obs_dim()
+
+
+def _obs_norm_dim_hint(model_path: Path) -> int | None:
+    candidates = [
+        model_path.with_suffix(".obsnorm.npz"),
+        model_path.parent / "obsnorm_latest.npz",
+        model_path.parent.parent / "obsnorm_latest.npz",
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = np.load(candidate)
+            mean = np.asarray(payload["mean"])
+        except Exception:
+            continue
+        return int(mean.shape[0]) if mean.ndim >= 1 else None
+    return None
+
+
 def _build_history_pool(role: str, env_config: dict[str, Any], max_items: int, seed: int) -> OpponentPool | None:
-    model_paths = discover_role_model_paths(role, max_items=max_items)
+    game_mode = str(env_config.get("world", {}).get("game_mode", "escape"))
+    model_paths = discover_role_model_paths(role, game_mode=game_mode, max_items=max_items)
+    expected_obs_dim = _expected_obs_dim(role, env_config)
     if not model_paths:
         return None
     pool = OpponentPool(max_size=max_items, seed=seed)
     for model_path in model_paths:
+        observed_dim = _obs_norm_dim_hint(model_path)
+        if observed_dim is not None and observed_dim != expected_obs_dim:
+            continue
         pool.add(
             _cached_factory(
                 lambda path=model_path, model_role=role, env_cfg=deepcopy(env_config): SB3PolicyController(
@@ -174,7 +208,7 @@ def _build_history_pool(role: str, env_config: dict[str, Any], max_items: int, s
                 )
             )
         )
-    return pool
+    return pool if len(pool) > 0 else None
 
 
 def build_single_agent_opponent(
@@ -324,8 +358,8 @@ def default_device(train_cfg: dict[str, Any]) -> str:
     return str(train_cfg.get("device", "auto"))
 
 
-def load_role_configs(role: str, preset: str | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    env_config = load_env_config()
+def load_role_configs(role: str, preset: str | None, game_mode: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    env_config = build_game_mode_env_config(game_mode=game_mode, manual_collect_required=False, interactive=False)
     root_training = load_training_config()
     train_config = deepcopy(root_training["single_agent"])
     env_config, train_config = apply_preset("single_agent", preset, env_config, train_config, root_training)
@@ -345,17 +379,19 @@ def write_model_metadata(model_path: Path, payload: dict[str, Any]) -> None:
     metadata_path.write_text(json.dumps(json.loads(json.dumps(payload, default=str)), indent=2, ensure_ascii=True), encoding="utf-8")
 
 
-def resolve_single_agent_run_dir(role: str, train_cfg: dict[str, Any], run_name: str | None) -> Path:
+def resolve_single_agent_run_dir(role: str, train_cfg: dict[str, Any], run_name: str | None, game_mode: str) -> Path:
     checkpoint_key = "enemy_checkpoint_dir" if role == "enemy" else "player_checkpoint_dir"
     base_dir = resolve_repo_path(train_cfg[checkpoint_key])
+    base_dir = base_dir / normalize_game_mode(game_mode)
     name = run_name or timestamped_run_name(role)
     run_dir = base_dir / name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
-def resolve_selfplay_run_dir(train_cfg: dict[str, Any], run_name: str | None) -> Path:
+def resolve_selfplay_run_dir(train_cfg: dict[str, Any], run_name: str | None, game_mode: str) -> Path:
     base_dir = resolve_repo_path(train_cfg["checkpoint_root_dir"])
+    base_dir = base_dir / normalize_game_mode(game_mode)
     name = run_name or timestamped_run_name("selfplay")
     run_dir = base_dir / name
     run_dir.mkdir(parents=True, exist_ok=True)

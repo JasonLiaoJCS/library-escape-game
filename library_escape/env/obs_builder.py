@@ -29,9 +29,19 @@ class ObsBuilder:
     def build_enemy_obs(self, world) -> np.ndarray:
         enemy = world.enemy
         player = world.player
-        visible = world.player_visible_to_enemy()
-        rel_x = player.x - enemy.x if (visible or not self.partial_observability) else 0.0
-        rel_y = player.y - enemy.y if (visible or not self.partial_observability) else 0.0
+        metrics = world.transition_metrics()
+        primary_visible = world.primary_enemy_sees_player() if hasattr(world, "primary_enemy_sees_player") else world.player_visible_to_enemy()
+        team_visible = world.player_visible_to_enemy()
+        rel_x = player.x - enemy.x if (team_visible or not self.partial_observability) else 0.0
+        rel_y = player.y - enemy.y if (team_visible or not self.partial_observability) else 0.0
+        nearest_ally_dx = 0.0
+        nearest_ally_dy = 0.0
+        allies = [ally for ally in getattr(world, "support_enemies", [])]
+        if allies:
+            nearest_ally = min(allies, key=lambda ally: math.hypot(ally.x - enemy.x, ally.y - enemy.y))
+            nearest_ally_dx = (nearest_ally.x - enemy.x) / world.width
+            nearest_ally_dy = (nearest_ally.y - enemy.y) / world.height
+        collection_flag, escape_flag = self._mode_flags(world)
 
         features = [
             enemy.x / world.width,
@@ -40,27 +50,44 @@ class ObsBuilder:
             enemy.facing_y,
             rel_x / world.width,
             rel_y / world.height,
-            1.0 if visible else 0.0,
+            1.0 if primary_visible else 0.0,
+            1.0 if team_visible else 0.0,
+            float(metrics.get("visible_enemy_ratio", 0.0)),
+            nearest_ally_dx,
+            nearest_ally_dy,
             world.remaining_count("note") / max(1, int(world.env_config["collectibles"]["notes"])),
             world.remaining_count("exam") / max(1, int(world.env_config["collectibles"]["exams"])),
+            float(metrics.get("score_progress", 0.0)),
+            float(metrics.get("objective_progress", 0.0)),
             world.time_remaining / world.max_episode_seconds,
+            1.0 if world.can_player_escape() else 0.0,
+            float(metrics.get("player_in_escape_zone", 0.0)),
+            self._normalized_distance(world, float(metrics.get("distance_agents", 0.0))),
+            self._normalized_distance(world, float(metrics.get("distance_player_to_target", 0.0))),
+            self._normalized_distance(world, float(metrics.get("distance_player_to_escape", 0.0))),
+            self._normalized_distance(world, float(metrics.get("distance_enemy_to_escape", 0.0))),
+            float(metrics.get("exit_lead", 0.0)),
+            float(metrics.get("collection_progress", 0.0)),
+            float(metrics.get("team_detection_cooldown", 0.0)),
+            world.enemy_pause_fraction(enemy) if hasattr(world, "enemy_pause_fraction") else 0.0,
+            float(metrics.get("primary_threat_margin", 0.0)),
+            collection_flag,
+            escape_flag,
         ]
         features.extend(self._wall_rays(world, enemy.position, self.wall_rays))
         return np.asarray(features, dtype=np.float32)
 
     def build_player_obs(self, world) -> np.ndarray:
         player = world.player
-        enemy = world.enemy
+        metrics = world.transition_metrics()
+        nearest_enemy = world.nearest_enemy() if hasattr(world, "nearest_enemy") else world.enemy
         enemy_visible = self._enemy_visible_to_player(world)
-        rel_x = enemy.x - player.x if (enemy_visible or not self.partial_observability) else 0.0
-        rel_y = enemy.y - player.y if (enemy_visible or not self.partial_observability) else 0.0
-
-        nearest_note = world.nearest_collectible(player.position, kinds=("note", "exam"))
-        note_dx = 0.0
-        note_dy = 0.0
-        if nearest_note is not None:
-            note_dx = (nearest_note.x - player.x) / world.width
-            note_dy = (nearest_note.y - player.y) / world.height
+        rel_x = nearest_enemy.x - player.x if (enemy_visible or not self.partial_observability) else 0.0
+        rel_y = nearest_enemy.y - player.y if (enemy_visible or not self.partial_observability) else 0.0
+        note_dx, note_dy = self._relative_collectible_offset(world, player.position, ("note",))
+        exam_dx, exam_dy = self._relative_collectible_offset(world, player.position, ("exam",))
+        power_dx, power_dy = self._relative_collectible_offset(world, player.position, ("coffee", "freeze"))
+        collection_flag, escape_flag = self._mode_flags(world)
 
         features = [
             player.x / world.width,
@@ -70,30 +97,66 @@ class ObsBuilder:
             rel_x / world.width,
             rel_y / world.height,
             1.0 if enemy_visible else 0.0,
+            float(metrics.get("player_visible_primary", 0.0)),
+            float(metrics.get("visible_enemy_ratio", 0.0)),
+            self._normalized_distance(world, float(metrics.get("distance_agents", 0.0))),
             note_dx,
             note_dy,
+            exam_dx,
+            exam_dy,
+            power_dx,
+            power_dy,
+            float(metrics.get("objective_progress", 0.0)),
+            float(metrics.get("score_progress", 0.0)),
             world.time_remaining / world.max_episode_seconds,
             1.0 if world.can_player_escape() else 0.0,
+            float(metrics.get("player_in_escape_zone", 0.0)),
+            float(metrics.get("collection_progress", 0.0)),
+            self._normalized_distance(world, float(metrics.get("distance_player_to_target", 0.0))),
+            self._normalized_distance(world, float(metrics.get("distance_player_to_escape", 0.0))),
+            float(metrics.get("exit_lead", 0.0)),
             player.coffee_timer / max(1.0, float(world.env_config["world"]["coffee_duration_seconds"])),
-            enemy.freeze_timer / max(1.0, float(world.env_config["world"]["freeze_duration_seconds"])),
+            world.max_enemy_freeze_timer() / max(1.0, float(world.env_config["world"]["freeze_duration_seconds"])),
+            float(metrics.get("support_enemy_ratio", 0.0)),
+            float(metrics.get("team_detection_cooldown", 0.0)),
+            collection_flag,
+            escape_flag,
         ]
         features.extend(self._fan_rays(world, player.position, (player.facing_x, player.facing_y), self.player_enemy_rays))
         features.extend(self._wall_rays(world, player.position, self.wall_rays))
         return np.asarray(features, dtype=np.float32)
 
     def enemy_obs_dim(self) -> int:
-        return len(self.build_enemy_obs.__annotations__) if False else 10 + self.wall_rays
+        return 29 + self.wall_rays
 
     def player_obs_dim(self) -> int:
-        return 13 + self.player_enemy_rays + self.wall_rays
+        return 31 + self.player_enemy_rays + self.wall_rays
+
+    def _relative_collectible_offset(self, world, origin: tuple[float, float], kinds: tuple[str, ...]) -> tuple[float, float]:
+        target = world.nearest_collectible(origin, kinds=kinds)
+        if target is None:
+            return 0.0, 0.0
+        return (target.x - origin[0]) / world.width, (target.y - origin[1]) / world.height
+
+    def _normalized_distance(self, world, distance: float) -> float:
+        return float(distance / max(1.0, world.max_map_distance()))
+
+    def _mode_flags(self, world) -> tuple[float, float]:
+        return (
+            1.0 if getattr(world, "is_collection_mode", lambda: False)() else 0.0,
+            1.0 if getattr(world, "is_escape_mode", lambda: False)() else 0.0,
+        )
 
     def _enemy_visible_to_player(self, world) -> bool:
         player = world.player
-        enemy = world.enemy
-        distance = world.distance_between_agents()
-        if distance > self.max_ray_distance:
-            return False
-        return has_line_of_sight(player.position, enemy.position, world.obstacles)
+        enemies = list(getattr(world, "all_enemies", lambda: [world.enemy])())
+        for enemy in sorted(enemies, key=lambda item: math.hypot(player.x - item.x, player.y - item.y)):
+            distance = math.hypot(player.x - enemy.x, player.y - enemy.y)
+            if distance > self.max_ray_distance:
+                continue
+            if has_line_of_sight(player.position, enemy.position, world.obstacles):
+                return True
+        return False
 
     def _wall_rays(self, world, origin: tuple[float, float], count: int) -> list[float]:
         values: list[float] = []

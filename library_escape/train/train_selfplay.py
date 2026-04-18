@@ -12,7 +12,8 @@ from ..agents.opponent_pool import OpponentPool, PooledController, WeightedContr
 from ..agents.ppo_agent import SB3PolicyController
 from ..agents.rule_based_enemy import RandomEnemyController, RuleBasedEnemyController
 from ..agents.rule_based_player import HeuristicPlayerController, RandomPlayerController
-from ..config import REPO_ROOT, load_env_config, load_training_config
+from ..config import REPO_ROOT, load_training_config
+from ..game_modes import build_game_mode_env_config, game_mode_label, normalize_game_mode
 from .callbacks import EvalHistoryCallback, TrainingStatusCallback
 from .common import (
     AlgorithmSpec,
@@ -35,6 +36,7 @@ from .common import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run alternating PPO self-play for Library Escape.")
     parser.add_argument("--preset", type=str, default="balanced")
+    parser.add_argument("--game-mode", type=str, choices=("collection", "escape"), default="escape")
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--rounds", type=int, default=None)
     parser.add_argument("--timesteps-per-round", type=int, default=None)
@@ -247,6 +249,8 @@ def _train_phase(
             "train_config": train_cfg,
             "seed": seed,
             "resume_model_path": resume_model_path,
+            "game_mode": env_config.get("world", {}).get("game_mode", "escape"),
+            "game_mode_label": game_mode_label(env_config.get("world", {}).get("game_mode", "escape")),
         },
     )
     write_model_metadata(
@@ -255,6 +259,8 @@ def _train_phase(
             "role": controlled_agent,
             "algorithm": algo_spec.summary_name,
             "run_dir": phase_dir,
+            "game_mode": env_config.get("world", {}).get("game_mode", "escape"),
+            "game_mode_label": game_mode_label(env_config.get("world", {}).get("game_mode", "escape")),
         },
     )
     if best_model_path.exists():
@@ -264,6 +270,8 @@ def _train_phase(
                 "role": controlled_agent,
                 "algorithm": algo_spec.summary_name,
                 "run_dir": phase_dir,
+                "game_mode": env_config.get("world", {}).get("game_mode", "escape"),
+                "game_mode_label": game_mode_label(env_config.get("world", {}).get("game_mode", "escape")),
             },
         )
 
@@ -324,6 +332,8 @@ def _run_external_mappo_recipe(run_dir: Path, env_config: dict, train_cfg: dict,
             "train_config": train_cfg,
             "seed": args.seed,
             "preset": args.preset,
+            "game_mode": env_config.get("world", {}).get("game_mode", "escape"),
+            "game_mode_label": game_mode_label(env_config.get("world", {}).get("game_mode", "escape")),
             "notes": recipe_cfg.get("notes", ""),
         },
     )
@@ -331,7 +341,8 @@ def _run_external_mappo_recipe(run_dir: Path, env_config: dict, train_cfg: dict,
 
 def main() -> None:
     args = parse_args()
-    env_config = load_env_config()
+    game_mode = normalize_game_mode(args.game_mode)
+    env_config = build_game_mode_env_config(game_mode=game_mode, manual_collect_required=False, interactive=False)
     root_train_cfg = load_training_config()
     train_cfg = deepcopy(root_train_cfg["self_play"])
     env_config, train_cfg = apply_preset("self_play", args.preset, env_config, train_cfg, root_train_cfg)
@@ -346,7 +357,7 @@ def main() -> None:
         train_cfg["device"] = args.device
     env_config, train_cfg = apply_runtime_overrides(env_config, train_cfg, args.overrides_json)
 
-    run_dir = resolve_selfplay_run_dir(train_cfg, args.run_name)
+    run_dir = resolve_selfplay_run_dir(train_cfg, args.run_name, game_mode)
     algo_spec = resolve_algorithm_spec(train_cfg.get("algorithm", "league_ppo"))
     if algo_spec.uses_action_masks and str(env_config["action"]["type"]).lower() != "discrete":
         raise RuntimeError("Maskable PPO self-play requires `action.type: discrete` in configs/env.yaml or GUI overrides.")
@@ -452,6 +463,8 @@ def main() -> None:
             "train_config": train_cfg,
             "seed": args.seed,
             "preset": args.preset,
+            "game_mode": game_mode,
+            "game_mode_label": game_mode_label(game_mode),
         },
     )
 

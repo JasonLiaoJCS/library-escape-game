@@ -9,6 +9,7 @@ from .config import REPO_ROOT
 
 ASSET_PATHS = {
     "background": REPO_ROOT / "imgs" / "playground_background.jpg",
+    "background_alt": REPO_ROOT / "imgs" / "playground_background(1).jpg",
     "table_bag_1x1": REPO_ROOT / "imgs" / "table-bag-1x1.png",
     "table_bag_2x2": REPO_ROOT / "imgs" / "table-bag-2x2.png",
     "table_book_1x1": REPO_ROOT / "imgs" / "table-book-1x1.png",

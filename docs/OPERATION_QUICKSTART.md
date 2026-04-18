@@ -18,6 +18,10 @@
 
 - [`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md)
 
+如果你現在最想知道的是「目前這版遊戲到底怎麼算贏、怎麼算分、強化學習 reward 怎麼給」，可以直接跳到：
+
+- 本文的 `## 22. 目前遊戲規則 / 勝負條件 / 強化學習規格速查`
+
 ---
 
 ## 1. 先記住這個最簡單的用法
@@ -44,6 +48,20 @@ python -m library_escape.gui.app
 - 建 Elo leaderboard
 - 看 replay
 
+補充：
+
+- 現在 GUI 和 CLI 都統一用兩個使用者模式：`Collection` 與 `Escape`
+- `Collection` 比較接近原本 C++ 的計分 / 躲偵測玩法，固定 `5` 個敵人
+- `Escape` 是明確的逃脫對抗玩法，預設 `2` 個敵人（`1` 個主敵人 + `1` 個支援巡邏敵人）
+- 你在 `Train` 裡面訓練時，一定要先選 `Game mode`
+- 訓練好的 checkpoint，通常應該放回**相同的 Game mode** 裡播放
+- 如果同一張桌上有多個道具，現在會優先選你實際比較靠近的那個，不會再固定先拿書
+- 現在所有模式都不會瞬間拿書
+- `Collection` 的人類玩法要長按 `E`
+- `Escape` 與 `AI vs AI` 會在道具旁停留到進度滿才完成收集
+- 開局會有很短的保護時間，避免你一出生第一瞬間就被偵測到
+- Python 版已經把原 repo 內仍存在的背景音樂 / 偵測音效 / 結算成績音效接回來
+
 ---
 
 ## 2. 第一次使用的完整準備
@@ -52,13 +70,41 @@ python -m library_escape.gui.app
 
 請使用 `Python 3.12`。
 
+先切到專案根目錄：
+
+```powershell
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+```
+
+再建立專案內自己的 `.venv`：
+
 ```powershell
 py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[rl,dev]
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[rl,dev]"
 ```
 
 ### 2.2 驗證有沒有安裝好
+
+先確認你現在真的用到的是**專案內的** Python，不是家目錄裡其他同名 `.venv`：
+
+```powershell
+python -c "import sys; print(sys.executable)"
+```
+
+你應該看到像這樣的路徑：
+
+```text
+C:\Users\User\Desktop\大四其他\library-escape-game\.venv\Scripts\python.exe
+```
+
+不是這種：
+
+```text
+C:\Users\User\.venv\Scripts\python.exe
+```
+
+確認無誤後再啟動 GUI：
 
 ```powershell
 python -m library_escape.gui.app
@@ -66,42 +112,198 @@ python -m library_escape.gui.app
 
 如果 GUI 可以打開，代表基本上就能用了。
 
+### 2.3 你剛剛遇到過的兩個常見問題
+
+#### 問題 A：`pip install -e .[rl,dev]` 說目前資料夾不是 Python project
+
+錯誤長這樣：
+
+```text
+ERROR: file:///C:/Users/User does not appear to be a Python project
+```
+
+原因：
+
+- 你在 `C:\Users\User` 執行了安裝
+- 但 `pyproject.toml` 不在那裡
+- `.` 代表目前資料夾，所以 pip 裝錯地方了
+
+正確做法：
+
+```powershell
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+pip install -e ".[rl,dev]"
+```
+
+#### 問題 B：啟動 GUI 時 NumPy 爆掉，出現 `cp314` / `numpy._core._multiarray_umath`
+
+你剛剛遇到的是這種錯誤：
+
+```text
+ImportError: Importing the numpy C-extensions failed
+...
+_multiarray_umath.cp314-win_amd64.pyd
+```
+
+原因：
+
+- 你啟用的是錯的 `.venv`
+- 你實際用到的是 `C:\Users\User\.venv`
+- 那個 venv 裡的 NumPy 安裝壞掉了，混進了 `cp314` 檔案
+- 但你現在跑的是 Python 3.12
+
+最直接修法：
+
+```powershell
+deactivate
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+.\.venv\Scripts\Activate.ps1
+python -c "import sys; print(sys.executable)"
+python -m library_escape.gui.app
+```
+
+如果你懶得重新 activate，也可以直接指定專案內的 Python：
+
+```powershell
+cd "C:\Users\User\Desktop\大四其他\library-escape-game"
+.\.venv\Scripts\python.exe -m library_escape.gui.app
+```
+
+如果你想徹底避免之後再踩到，可以把家目錄那個壞掉的 venv 刪掉：
+
+```powershell
+Remove-Item -Recurse -Force C:\Users\User\.venv
+```
+
+### 2.4 一個很重要的觀念
+
+PowerShell prompt 前面出現：
+
+```text
+(.venv)
+```
+
+**不代表你一定在用正確的 `.venv`**。
+
+因為你可能同時有：
+
+- `C:\Users\User\.venv`
+- `C:\Users\User\Desktop\大四其他\library-escape-game\.venv`
+
+它們名字都叫 `.venv`，prompt 看起來會一樣。
+
+所以最可靠的檢查方式永遠是：
+
+```powershell
+python -c "import sys; print(sys.executable)"
+```
+
 ---
 
-## 3. 你現在要怎麼理解這個專案
+## 3. 先分清楚兩個不同概念：Game Mode 與 Train Mode
 
-你可以先把這個系統想成只有 3 種訓練模式。
+這是整個專案最容易混淆的地方。
 
-### 3.1 模式 A：訓練敵人
+你要先把它拆成兩層來理解：
+
+- `Game mode`
+  - 這是在說「這一局遊戲的規則是什麼」
+- `Train mode`
+  - 這是在說「這一次訓練，到底是訓練敵人、訓練玩家，還是雙方輪流訓練」
+
+### 3.1 Game mode A：`Collection`
+
+你可以把它理解成：
+
+- 比較接近原本 C++ 的收集 / 計分玩法
+- 玩家目標是：在時間結束前盡量收集 `note` / `exam`
+- 沒有真正的「跑到出口就贏」條件
+- 敵人目標是：看到玩家、扣時間、把玩家最終分數壓低
+- 固定 `5` 個敵人
+
+這個模式訓練出來的策略，通常會偏向：
+
+- 偷路線
+- 卡視角
+- 搶高分桌位
+- 壓收集節奏
+- 防守玩家的分數成長
+
+### 3.2 Game mode B：`Escape`
+
+你可以把它理解成：
+
+- 明確的逃脫對抗玩法
+- 玩家目標是：先收完必要目標，再走到出口
+- 敵人目標是：抓到玩家，或至少拖到時間結束
+- 預設 `2` 個敵人（`1` 主敵人 + `1` 支援巡邏敵人）
+- 訓練 preset 會再逐步把支援敵人數量往上拉，讓後期 self-play 仍然能學到包夾與守出口
+
+這個模式訓練出來的策略，通常會偏向：
+
+- 抄近路
+- 包夾
+- 守出口
+- 圍堵
+- 目標路線預判
+
+### 3.3 Train mode A：訓練敵人 `enemy`
 
 意思是：
 
-- 玩家先用「規則式 / script」控制
+- 玩家先用規則式 controller
 - 敵人是 RL 模型
-- 目標是讓敵人學會更會抓人
+- 你是在練「敵人怎麼變強」
 
-### 3.2 模式 B：訓練玩家
+### 3.4 Train mode B：訓練玩家 `player`
 
 意思是：
 
-- 敵人先用「規則式 / script」控制
+- 敵人先用規則式 controller
 - 玩家是 RL 模型
-- 目標是讓玩家學會更會收集、躲避、逃脫
+- 你是在練「玩家怎麼變強」
 
-### 3.3 模式 C：Self-play
+### 3.5 Train mode C：`selfplay`
 
 意思是：
 
 - 兩邊都訓練
-- 先訓練敵人一輪
-- 再訓練玩家一輪
-- 再繼續交替
+- 會交替訓練 enemy / player
+- 你是在練整個對抗系統一起升級
 
-你可以把它理解成：
+### 3.6 最重要的實際規則
 
-- 訓練敵人 = 單邊訓練
-- 訓練玩家 = 單邊訓練
-- self-play = 雙邊輪流訓練
+你在 `Train` 頁面訓練時，一定會同時決定兩件事：
+
+1. `Mode`
+   - `enemy` / `player` / `selfplay`
+2. `Game mode`
+   - `collection` / `escape`
+
+例如：
+
+- `Mode = enemy` + `Game mode = collection`
+  - 代表你在訓練「Collection 規則下的敵人」
+- `Mode = player` + `Game mode = escape`
+  - 代表你在訓練「Escape 規則下的玩家」
+- `Mode = selfplay` + `Game mode = escape`
+  - 代表你在訓練「Escape 規則下的玩家與敵人交替對抗」
+
+### 3.7 訓練完之後要放到哪裡播放
+
+原則非常簡單：
+
+- **Collection 訓練出的 checkpoint，就放回 Collection 模式播放**
+- **Escape 訓練出的 checkpoint，就放回 Escape 模式播放**
+
+例如：
+
+- 你用 `--game-mode collection` 訓練敵人
+  - 之後播放也應該用 `--game-mode collection`
+- 你用 `--game-mode escape` 做 self-play
+  - 之後觀戰也應該用 `--game-mode escape`
+
+GUI 現在也會把 `Game mode` 寫進訓練摘要與 checkpoint metadata，播放時如果你選錯模式，會先警告你。
 
 ---
 
@@ -117,38 +319,35 @@ python -m library_escape.gui.app
 
 然後進入 `Play` 分頁。
 
-你會看到模式選單。
+你會先看到兩個最重要的欄位：
 
-目前主要模式：
-
-- `Human vs Rule Enemy`
-- `Human vs Enemy Checkpoint`
-- `AI vs AI`
+- `Mode`
+- `Game mode`
 
 ### 4.2 方法 B：直接用指令
 
-#### 人類玩，敵人是規則式 AI
+#### 人類玩，Collection 模式，敵人是規則式 AI
 
 ```powershell
-python -m library_escape.play.human_vs_ai
+python -m library_escape.play.human_vs_ai --game-mode collection
 ```
 
-#### 人類玩，敵人是你訓練好的模型
+#### 人類玩，Escape 模式，敵人是你訓練好的模型
 
 ```powershell
-python -m library_escape.play.human_vs_ai --enemy-model checkpoints\enemy\你的_run_name\models\enemy_latest.zip
+python -m library_escape.play.human_vs_ai --game-mode escape --enemy-model checkpoints\enemy\escape\你的_run_name\models\enemy_latest.zip
 ```
 
-#### AI 對 AI
+#### AI 對 AI，Collection 模式
 
 ```powershell
-python -m library_escape.play.ai_vs_ai
+python -m library_escape.play.ai_vs_ai --game-mode collection
 ```
 
-#### AI 對 AI，指定雙方模型
+#### AI 對 AI，Escape 模式，指定雙方模型
 
 ```powershell
-python -m library_escape.play.ai_vs_ai --player-model checkpoints\player_single\你的_run_name\models\player_latest.zip --enemy-model checkpoints\enemy\你的_run_name\models\enemy_latest.zip
+python -m library_escape.play.ai_vs_ai --game-mode escape --player-model checkpoints\player_single\escape\你的_run_name\models\player_latest.zip --enemy-model checkpoints\enemy\escape\你的_run_name\models\enemy_latest.zip
 ```
 
 ---
@@ -159,15 +358,17 @@ python -m library_escape.play.ai_vs_ai --player-model checkpoints\player_single\
 
 進 `Play` 分頁後：
 
-1. 找到 `Mode`
-2. 從下拉選單選：
+1. 先選 `Mode`
    - `Human vs Rule Enemy`
    - `Human vs Enemy Checkpoint`
    - `AI vs AI`
+2. 再選 `Game mode`
+   - `collection`
+   - `escape`
 3. 如果要用模型，就在右邊選 `.zip`
 4. 按 `Start Game`
 
-### 5.2 每個模式代表什麼
+### 5.2 每個 `Mode` 代表什麼
 
 #### `Human vs Rule Enemy`
 
@@ -186,8 +387,31 @@ python -m library_escape.play.ai_vs_ai --player-model checkpoints\player_single\
 
 適合：
 
+- 不載模型時，用 script baseline 快速檢查遊戲流程
 - 看兩個模型對戰
 - 測試訓練成果
+
+### 5.3 每個 `Game mode` 代表什麼
+
+#### `collection`
+
+適合：
+
+- 想玩接近原本 C++ 的收集 / 計分感
+- 想訓練搶分、隱匿、干擾收集
+
+#### `escape`
+
+適合：
+
+- 想看明確的抓捕 vs 逃脫
+- 想訓練守出口、圍捕、抄路線、路徑規劃
+
+補充：
+
+- 如果你沒有指定 `player` / `enemy` checkpoint，`AI vs AI` 跑的是內建 heuristic / patrol controller
+- 它應該會巡邏、繞障礙、收集，不應該整批卡在牆邊發呆
+- 真正要看 RL 策略，請載入訓練後的 `.zip` checkpoint
 
 ---
 
@@ -233,6 +457,7 @@ python -m library_escape.gui.app
 這裡你會看到幾個重要欄位：
 
 - `Mode`
+- `Game mode`
 - `Preset`
 - `Run name`
 - `Timesteps / round`
@@ -248,7 +473,19 @@ python -m library_escape.gui.app
 - `player`：訓練玩家
 - `selfplay`：雙方輪流訓練
 
-### 8.4 `Preset` 要選什麼
+### 8.4 `Game mode` 要選什麼
+
+- `collection`
+  - 訓練計分 / 收集 / 壓分玩法
+- `escape`
+  - 訓練抓捕 / 逃脫 / 守出口玩法
+
+新手建議：
+
+1. 如果你想先看最明確的勝負，先用 `escape`
+2. 如果你想保留原版收集感，也要另外跑一組 `collection`
+
+### 8.5 `Preset` 要選什麼
 
 - `fast`：快速測試
 - `balanced`：一般推薦
@@ -260,7 +497,7 @@ python -m library_escape.gui.app
 2. 確認流程都會跑
 3. 再改 `balanced`
 
-### 8.5 `Algorithm` 要選什麼
+### 8.6 `Algorithm` 要選什麼
 
 如果 `Mode = enemy` 或 `player`：
 
@@ -275,26 +512,26 @@ python -m library_escape.gui.app
 
 新手建議：
 
-- 單邊訓練先用 `ppo`
-- 如果你要更穩的離散動作控制，可試 `maskable_ppo`
-- self-play 先用 `league_ppo`
+- 單邊訓練直接用 `maskable_ppo`
+- self-play 直接用 `league_maskable_ppo`
+- 只有你想做特殊對照實驗時，再手動改回 `ppo` 或 `league_ppo`
 
-### 8.6 `Run name` 要填什麼
+### 8.7 `Run name` 要填什麼
 
 建議填一個你看得懂的名字，例如：
 
-- `enemy_test_01`
-- `player_fast_01`
-- `selfplay_balanced_v1`
+- `enemy_escape_test_01`
+- `player_collection_fast_01`
+- `selfplay_escape_balanced_v1`
 
-### 8.7 `Timesteps / round`
+### 8.8 `Timesteps / round`
 
 如果是：
 
 - `enemy` / `player`：這就是總訓練 timesteps
 - `selfplay`：這是一回合的 timesteps
 
-### 8.8 `Rounds`
+### 8.9 `Rounds`
 
 只有 self-play 會用到。
 
@@ -310,7 +547,7 @@ python -m library_escape.gui.app
 4. 訓練 player 第 2 輪
 5. 一直做下去
 
-### 8.9 `Vector envs`
+### 8.10 `Vector envs`
 
 這是同時開幾個環境來收資料。
 
@@ -326,7 +563,7 @@ python -m library_escape.gui.app
 
 開始。
 
-### 8.10 `Device`
+### 8.11 `Device`
 
 - `auto`
 - `cpu`
@@ -347,10 +584,11 @@ auto
 1. 開 GUI
 2. 進 `Train`
 3. `Mode` 選 `enemy`
-4. `Preset` 選 `fast`
-5. `Algorithm` 選 `ppo`
-6. `Run name` 填 `enemy_test_01`
-7. 按 `Start Training`
+4. `Game mode` 選 `escape`
+5. `Preset` 選 `fast`
+6. `Algorithm` 選 `maskable_ppo`
+7. `Run name` 填 `enemy_escape_test_01`
+8. 按 `Start Training`
 
 ### 9.2 你會看到什麼
 
@@ -371,7 +609,7 @@ auto
 通常在：
 
 ```text
-checkpoints/enemy/enemy_test_01/models/enemy_latest.zip
+checkpoints/enemy/escape/enemy_escape_test_01/models/enemy_latest.zip
 ```
 
 ---
@@ -383,17 +621,18 @@ checkpoints/enemy/enemy_test_01/models/enemy_latest.zip
 1. 開 GUI
 2. 進 `Train`
 3. `Mode` 選 `player`
-4. `Preset` 選 `fast`
-5. `Algorithm` 選 `ppo`
-6. `Run name` 填 `player_test_01`
-7. 按 `Start Training`
+4. `Game mode` 選 `collection` 或 `escape`
+5. `Preset` 選 `fast`
+6. `Algorithm` 選 `maskable_ppo`
+7. `Run name` 填 `player_escape_test_01`
+8. 按 `Start Training`
 
 ### 10.2 訓練結果在哪裡
 
 通常在：
 
 ```text
-checkpoints/player_single/player_test_01/models/player_latest.zip
+checkpoints/player_single/escape/player_escape_test_01/models/player_latest.zip
 ```
 
 ---
@@ -407,11 +646,12 @@ checkpoints/player_single/player_test_01/models/player_latest.zip
 1. 開 GUI
 2. 進 `Train`
 3. `Mode` 選 `selfplay`
-4. `Preset` 選 `fast`
-5. `Algorithm` 選 `league_ppo`
-6. `Run name` 填 `selfplay_test_01`
-7. `Rounds` 填 `2` 或 `4`
-8. 按 `Start Training`
+4. `Game mode` 選 `escape`
+5. `Preset` 選 `fast`
+6. `Algorithm` 選 `league_maskable_ppo`
+7. `Run name` 填 `selfplay_escape_test_01`
+8. `Rounds` 填 `2` 或 `4`
+9. 按 `Start Training`
 
 ### 11.2 這個模式內部會做什麼
 
@@ -427,7 +667,7 @@ checkpoints/player_single/player_test_01/models/player_latest.zip
 通常在：
 
 ```text
-checkpoints/selfplay/selfplay_test_01/
+checkpoints/selfplay/escape/selfplay_escape_test_01/
 ```
 
 裡面會分成：
@@ -458,49 +698,49 @@ python -m library_escape.gui.app
 ### 12.2 開遊戲：人類對規則式敵人
 
 ```powershell
-python -m library_escape.play.human_vs_ai
+python -m library_escape.play.human_vs_ai --game-mode collection
 ```
 
 ### 12.3 開遊戲：人類對訓練好的敵人
 
 ```powershell
-python -m library_escape.play.human_vs_ai --enemy-model checkpoints\enemy\enemy_test_01\models\enemy_latest.zip
+python -m library_escape.play.human_vs_ai --game-mode escape --enemy-model checkpoints\enemy\escape\enemy_escape_test_01\models\enemy_latest.zip
 ```
 
 ### 12.4 開遊戲：AI 對 AI
 
 ```powershell
-python -m library_escape.play.ai_vs_ai --player-model checkpoints\player_single\player_test_01\models\player_latest.zip --enemy-model checkpoints\enemy\enemy_test_01\models\enemy_latest.zip
+python -m library_escape.play.ai_vs_ai --game-mode escape --player-model checkpoints\player_single\escape\player_escape_test_01\models\player_latest.zip --enemy-model checkpoints\enemy\escape\enemy_escape_test_01\models\enemy_latest.zip
 ```
 
 ### 12.5 訓練敵人
 
 ```powershell
-python -m library_escape.train.train_enemy
+python -m library_escape.train.train_enemy --game-mode escape
 ```
 
 ### 12.6 訓練敵人，用 fast preset
 
 ```powershell
-python -m library_escape.train.train_enemy --preset fast
+python -m library_escape.train.train_enemy --game-mode escape --preset fast
 ```
 
 ### 12.7 訓練敵人，自訂 timesteps
 
 ```powershell
-python -m library_escape.train.train_enemy --timesteps 300000 --n-envs 4 --run-name enemy_test_01
+python -m library_escape.train.train_enemy --game-mode escape --timesteps 300000 --n-envs 4 --run-name enemy_escape_test_01
 ```
 
 ### 12.8 訓練玩家
 
 ```powershell
-python -m library_escape.train.train_player --preset fast --run-name player_test_01
+python -m library_escape.train.train_player --game-mode collection --preset fast --run-name player_collection_test_01
 ```
 
 ### 12.9 Self-play
 
 ```powershell
-python -m library_escape.train.train_selfplay --preset fast --rounds 2 --timesteps-per-round 60000 --run-name selfplay_test_01
+python -m library_escape.train.train_selfplay --game-mode escape --preset fast --rounds 2 --timesteps-per-round 60000 --run-name selfplay_escape_test_01
 ```
 
 ### 12.10 訓練敵人，用 Maskable PPO
@@ -509,20 +749,20 @@ PowerShell 建議這樣寫：
 
 ```powershell
 $json = '{"train":{"algorithm":"maskable_ppo"}}'
-python -m library_escape.train.train_enemy --preset balanced --run-name enemy_mask_01 --overrides-json $json
+python -m library_escape.train.train_enemy --game-mode escape --preset balanced --run-name enemy_escape_mask_01 --overrides-json $json
 ```
 
 ### 12.11 Self-play，用 league Maskable PPO
 
 ```powershell
 $json = '{"train":{"algorithm":"league_maskable_ppo"}}'
-python -m library_escape.train.train_selfplay --preset balanced --run-name selfplay_mask_01 --overrides-json $json
+python -m library_escape.train.train_selfplay --game-mode collection --preset balanced --run-name selfplay_collection_mask_01 --overrides-json $json
 ```
 
 ### 12.12 replay 錄製
 
 ```powershell
-python -m library_escape.play.ai_vs_ai --record-replay replays\match_01.ler.gz
+python -m library_escape.play.ai_vs_ai --game-mode escape --record-replay replays\match_01.ler.gz
 ```
 
 ### 12.13 replay 播放
@@ -563,7 +803,8 @@ python scripts\eval_elo.py --root checkpoints --episodes 8 --output checkpoints\
 
 位置：
 
-- [`configs/rewards.yaml`](../configs/rewards.yaml)
+- Collection 模式：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+- Escape 模式：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 
 例如：
 
@@ -620,11 +861,13 @@ python scripts\eval_elo.py --root checkpoints --episodes 8 --output checkpoints\
 
 ```yaml
 world:
-  player_speed: 4.20
-  enemy_speed: 3.60
+  player_speed: 4.00
+  enemy_speed: 3.65
 enemy:
-  vision_range: 6.0
-  vision_angle_deg: 70.0
+  vision_range: 5.50
+  vision_angle_deg: 52.0
+enemy_team:
+  support_count: 4
 timing:
   rl_frame_skip: 4
 ```
@@ -633,40 +876,63 @@ timing:
 
 改：
 
-- `configs/rewards.yaml`
+- `configs/rewards_escape.yaml`
 
 重點欄位：
 
 ```yaml
 enemy:
-  catch_player: 140.0
-  player_in_cone_per_step: 0.70
+  catch_player: 220.0
+  primary_visible_per_step: 0.50
+  support_visible_per_step: 0.20
+  team_visible_ratio_per_step: 0.16
   potential:
-    capture_progress: 2.80
-    visibility_lock: 0.75
-    escape_pressure: 1.40
+    capture_pressure: 2.40
+    team_visibility: 1.55
+    exit_guard: 2.50
 ```
 
 ### 14.3 只想讓玩家更積極學逃脫
 
 改：
 
-- `configs/rewards.yaml`
+- `configs/rewards_escape.yaml`
 
 重點欄位：
 
 ```yaml
 player:
-  escape: 160.0
-  collect_note: 28.0
-  seen_per_step: -0.35
+  escape: 220.0
+  collect_note: 14.0
+  primary_seen_per_step: -0.35
+  support_seen_per_step: -0.14
   potential:
-    objective_progress: 2.50
-    target_navigation: 2.20
-    escape_navigation: 3.20
+    objective_progress: 2.20
+    target_navigation: 1.80
+    escape_navigation: 4.00
+    threat_margin: 1.00
 ```
 
-### 14.4 只想讓訓練更快
+### 14.4 只想讓 Collection 模式更偏重分數與隱匿
+
+改：
+
+- `configs/rewards_collection.yaml`
+
+重點欄位：
+
+```yaml
+player:
+  collect_note: 14.0
+  collect_exam: 22.0
+  primary_seen_per_step: -0.40
+enemy:
+  player_collect_note_penalty: -16.0
+  player_collect_exam_penalty: -26.0
+  primary_visible_per_step: 0.55
+```
+
+### 14.5 只想讓訓練更快
 
 改：
 
@@ -787,27 +1053,28 @@ batch_size
 
 1. 開 GUI
 2. 去 `Play`
-3. 如果要人類對敵人模型：
+3. 先選對應的 `Game mode`
+4. 如果要人類對敵人模型：
    - 選 `Human vs Enemy Checkpoint`
    - 載入 `enemy_latest.zip`
-4. 如果要 AI 對 AI：
+5. 如果要 AI 對 AI：
    - 選 `AI vs AI`
    - 載入 `player_latest.zip`
    - 載入 `enemy_latest.zip`
-5. 按 `Start Game`
+6. 按 `Start Game`
 
 ### 17.2 CLI 方法
 
 #### 載入敵人模型給人類對戰
 
 ```powershell
-python -m library_escape.play.human_vs_ai --enemy-model checkpoints\enemy\enemy_test_01\models\enemy_latest.zip
+python -m library_escape.play.human_vs_ai --game-mode escape --enemy-model checkpoints\enemy\escape\enemy_escape_test_01\models\enemy_latest.zip
 ```
 
 #### 載入玩家模型與敵人模型做 AI 對戰
 
 ```powershell
-python -m library_escape.play.ai_vs_ai --player-model checkpoints\player_single\player_test_01\models\player_latest.zip --enemy-model checkpoints\enemy\enemy_test_01\models\enemy_latest.zip
+python -m library_escape.play.ai_vs_ai --game-mode escape --player-model checkpoints\player_single\escape\player_escape_test_01\models\player_latest.zip --enemy-model checkpoints\enemy\escape\enemy_escape_test_01\models\enemy_latest.zip
 ```
 
 ---
@@ -855,31 +1122,31 @@ python -m library_escape.gui.app
 ### 玩遊戲
 
 ```powershell
-python -m library_escape.play.human_vs_ai
+python -m library_escape.play.human_vs_ai --game-mode collection
 ```
 
 ### AI 對 AI
 
 ```powershell
-python -m library_escape.play.ai_vs_ai
+python -m library_escape.play.ai_vs_ai --game-mode escape
 ```
 
 ### 訓練敵人
 
 ```powershell
-python -m library_escape.train.train_enemy --preset fast --run-name enemy_test_01
+python -m library_escape.train.train_enemy --game-mode escape --preset fast --run-name enemy_escape_test_01
 ```
 
 ### 訓練玩家
 
 ```powershell
-python -m library_escape.train.train_player --preset fast --run-name player_test_01
+python -m library_escape.train.train_player --game-mode collection --preset fast --run-name player_collection_test_01
 ```
 
 ### Self-play
 
 ```powershell
-python -m library_escape.train.train_selfplay --preset fast --rounds 2 --timesteps-per-round 60000 --run-name selfplay_test_01
+python -m library_escape.train.train_selfplay --game-mode escape --preset fast --rounds 2 --timesteps-per-round 60000 --run-name selfplay_escape_test_01
 ```
 
 ### Replay 播放
@@ -909,36 +1176,40 @@ python -m library_escape.gui.app
 在 `Play`：
 
 1. 選 `Human vs Rule Enemy`
-2. 按 `Start Game`
+2. `Game mode = collection`
+3. 按 `Start Game`
 
 ### 20.3 再練一個敵人
 
 在 `Train`：
 
 1. `Mode = enemy`
-2. `Preset = fast`
-3. `Algorithm = ppo`
-4. `Run name = enemy_test_01`
-5. 按 `Start Training`
+2. `Game mode = escape`
+3. `Preset = fast`
+4. `Algorithm = maskable_ppo`
+5. `Run name = enemy_escape_test_01`
+6. 按 `Start Training`
 
 ### 20.4 再拿這個敵人來玩
 
 在 `Play`：
 
 1. `Mode = Human vs Enemy Checkpoint`
-2. 選 `checkpoints/enemy/enemy_test_01/models/enemy_latest.zip`
-3. 按 `Start Game`
+2. `Game mode = escape`
+3. 選 `checkpoints/enemy/escape/enemy_escape_test_01/models/enemy_latest.zip`
+4. 按 `Start Game`
 
 ### 20.5 再做 self-play
 
 在 `Train`：
 
 1. `Mode = selfplay`
-2. `Preset = fast`
-3. `Algorithm = league_ppo`
-4. `Run name = selfplay_test_01`
-5. `Rounds = 2`
-6. 按 `Start Training`
+2. `Game mode = escape`
+3. `Preset = fast`
+4. `Algorithm = league_maskable_ppo`
+5. `Run name = selfplay_escape_test_01`
+6. `Rounds = 2`
+7. 按 `Start Training`
 
 ### 20.6 再去看結果
 
@@ -959,9 +1230,152 @@ python -m library_escape.gui.app
 
 - [`docs/OPERATION_QUICKSTART.md`](./OPERATION_QUICKSTART.md)
 - [`configs/env.yaml`](../configs/env.yaml)
-- [`configs/rewards.yaml`](../configs/rewards.yaml)
+- [`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+- [`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 - [`configs/training.yaml`](../configs/training.yaml)
+- [`library_escape/game_modes.py`](../library_escape/game_modes.py)
 
 如果你要進一步研究細節，再看：
 
 - [`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md)
+
+---
+
+## 22. 目前遊戲規則 / 勝負條件 / 強化學習規格速查
+
+### 22.1 現在有兩個 Game mode
+
+- `Collection`
+  - 收集 / 計分 / 躲偵測
+  - 比較接近原本 C++ 的遊玩感
+  - 固定 `5` 個敵人
+  - 沒有真正的出口勝利條件
+- `Escape`
+  - 先完成目標，再逃到出口
+  - 用來做最清楚的抓捕 vs 逃脫訓練
+  - 預設 `2` 個敵人（`1` 主敵人 + `1` 支援敵人）
+  - 有真正的玩家勝利 / 敵人勝利
+
+### 22.2 Collection 模式怎麼算玩得好
+
+Collection 不是嚴格的二元勝負模式。
+
+你可以把它理解成：
+
+- 玩家目標：在時間結束前盡量收 `note` / `exam`，把分數拉高
+- 敵人目標：盡量看到玩家、扣時間、壓低玩家最終分數
+
+也就是：
+
+- Collection 沒有真正的 `escaped` 勝利條件
+- 比較像單人挑戰 / 計分模式
+- 被看到時，只會有真正觸發偵測的那一個敵人短暫停住，不會整隊一起停格
+
+### 22.3 Escape 模式怎麼算玩家贏、敵人贏
+
+玩家贏：
+
+1. 先完成逃脫前置條件
+   - 預設是所有 `note` 收完
+   - `exam` 預設不是必要，但可以在 [`configs/env.yaml`](../configs/env.yaml) 改
+2. 再真的走進出口區域
+
+敵人贏：
+
+- 任一敵人進到抓捕半徑內抓到玩家
+
+另外在訓練視角裡：
+
+- `time_expired`
+- `stalemate`
+
+也都代表玩家這一局沒有成功完成目標。
+
+### 22.4 訓練時到底在練什麼
+
+這件事情一定要一起看 `Train mode` 與 `Game mode`。
+
+例如：
+
+- `enemy + collection`
+  - 在練「Collection 規則下的敵人怎麼更會壓分」
+- `player + collection`
+  - 在練「Collection 規則下的玩家怎麼更會偷收集、走位、保分」
+- `enemy + escape`
+  - 在練「Escape 規則下的敵人怎麼更會追擊、包夾、守出口」
+- `player + escape`
+  - 在練「Escape 規則下的玩家怎麼更會拿目標、躲追擊、成功逃脫」
+- `selfplay + collection`
+  - 雙方在 Collection 規則下互相拉高收集 vs 壓分策略
+- `selfplay + escape`
+  - 雙方在 Escape 規則下互相拉高圍捕 vs 逃脫策略
+
+### 22.5 訓練完之後要去哪個模式播放
+
+原則就是：
+
+- `Collection` 訓練出的 checkpoint，就回 `Collection` 播放
+- `Escape` 訓練出的 checkpoint，就回 `Escape` 播放
+
+實際上：
+
+- 敵人模型會放在 `checkpoints/enemy/<game_mode>/...`
+- 玩家模型會放在 `checkpoints/player_single/<game_mode>/...`
+- self-play 會放在 `checkpoints/selfplay/<game_mode>/...`
+
+### 22.6 分數怎麼算
+
+目前 HUD 上的分數公式是：
+
+```text
+score_value = note_count * 8 + exam_count * 12
+```
+
+也就是：
+
+- `note` 一個 `+8`
+- `exam` 一個 `+12`
+- `coffee` / `freeze` 不加 HUD 總分
+
+### 22.7 道具效果是什麼
+
+- `note`
+  - 主目標道具
+- `exam`
+  - 次主目標道具
+- `coffee`
+  - `Collection` 會加快收集速度
+  - `Escape` 會加快移動速度
+- `freeze`
+  - 會把所有敵人凍住一段時間
+
+### 22.8 收集規則現在是什麼
+
+- 現在所有模式都不是瞬間撿起來
+- 收集時間預設是 `0.85` 秒
+- `Collection`
+  - 要按住 `E`
+- `Escape`
+  - 不用按 `E`
+  - 但也要停在互動範圍內直到進度條滿
+- 如果同一張桌上有多個道具
+  - 會優先拿你實際比較靠近的那一個
+
+### 22.9 強化學習的 action / observation / reward 要去哪裡看
+
+如果你想直接查完整規格，請看完整技術手冊：
+
+- Action space：[`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md) 的 `## 9`
+- Observation space：[`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md) 的 `## 10`
+- Reward 權重與公式：[`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md) 的 `## 11`
+- 遊戲規則 / 勝負條件 / 分數 / 道具效果：[`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md) 的 `## 27`
+
+### 22.10 我要改這些東西時，最重要的檔案是哪幾個
+
+- 遊戲規則 / 速度 / 視野 / 敵人數：[`configs/env.yaml`](../configs/env.yaml)
+- Collection reward 權重：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+- Escape reward 權重：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
+- Observation feature 組裝：[`library_escape/env/obs_builder.py`](../library_escape/env/obs_builder.py)
+- Action 定義：[`library_escape/core/actions.py`](../library_escape/core/actions.py)
+- 互動遊玩規則 preset：[`library_escape/play/presets.py`](../library_escape/play/presets.py)
+- 使用者模式映射：[`library_escape/game_modes.py`](../library_escape/game_modes.py)

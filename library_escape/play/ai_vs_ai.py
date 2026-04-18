@@ -9,8 +9,10 @@ import pygame
 from ..agents.ppo_agent import SB3PolicyController
 from ..agents.rule_based_enemy import RuleBasedEnemyController
 from ..agents.rule_based_player import HeuristicPlayerController
-from ..config import load_env_config
+from ..audio import GameAudioController
 from ..core.world import World
+from ..game_modes import game_mode_label, infer_game_mode_from_models, normalize_game_mode
+from ..play.presets import build_play_env_config
 from ..replay.io import ReplayRecorder
 from ..render.pygame_view import PygameView
 
@@ -23,14 +25,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-window", action="store_true")
     parser.add_argument("--max-seconds", type=float, default=None)
     parser.add_argument("--record-replay", type=str, default=None, help="Optional replay output path (.ler.gz).")
+    parser.add_argument("--game-mode", choices=("auto", "collection", "escape"), default="auto")
+    parser.add_argument("--ruleset", choices=("auto", "classic", "rl"), default=None, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    env_config = load_env_config()
+    requested_mode = args.game_mode if args.game_mode != "auto" else args.ruleset
+    if requested_mode in {None, "auto"}:
+        default_mode = "collection" if not (args.player_model or args.enemy_model) else "escape"
+        selected_mode = infer_game_mode_from_models(args.player_model, args.enemy_model, default=default_mode)
+    else:
+        selected_mode = normalize_game_mode(requested_mode)
+    env_config = build_play_env_config(
+        game_mode=selected_mode,
+        manual_collect_required=False,
+    )
     world = World(env_config=env_config, seed=args.seed)
-    renderer = PygameView(world, title="Library Escape - AI vs AI", hidden=args.hidden_window)
+    renderer = PygameView(world, title=f"Library Escape - AI vs AI ({game_mode_label(selected_mode)})", hidden=args.hidden_window)
+    audio = GameAudioController(world)
     player_controller = (
         SB3PolicyController("player", args.player_model, env_config=env_config)
         if args.player_model
@@ -51,6 +65,7 @@ def main() -> None:
                 "seed": args.seed,
                 "player_model": args.player_model,
                 "enemy_model": args.enemy_model,
+                "game_mode": selected_mode,
             },
         )
         replay.capture(world)
@@ -70,6 +85,7 @@ def main() -> None:
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_r and (world.terminated or world.truncated):
                 world.reset(seed=args.seed)
+                audio.reset_round(world)
                 if hasattr(player_controller, "reset"):
                     player_controller.reset()
                 if hasattr(enemy_controller, "reset"):
@@ -83,7 +99,18 @@ def main() -> None:
             while accumulator >= world.physics_dt:
                 player_action = player_controller.act(world)
                 enemy_action = enemy_controller.act(world)
-                world.step(player_action=player_action, enemy_action=enemy_action, frame_skip=1)
+                player_collect = None
+                if getattr(world, "manual_collect_required", False):
+                    player_collect = bool(
+                        player_controller.collect_pressed(world) if hasattr(player_controller, "collect_pressed") else False
+                    )
+                events = world.step(
+                    player_action=player_action,
+                    enemy_action=enemy_action,
+                    frame_skip=1,
+                    player_collect=player_collect,
+                )
+                audio.update(world, events)
                 accumulator -= world.physics_dt
                 if world.terminated or world.truncated:
                     break
@@ -93,6 +120,7 @@ def main() -> None:
             replay.capture(world)
 
     renderer.close()
+    audio.close()
     pygame.quit()
     if replay is not None:
         saved_path = replay.save()

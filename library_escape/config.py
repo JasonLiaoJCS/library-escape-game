@@ -58,7 +58,7 @@ def load_env_config(path: str | Path = "configs/env.yaml") -> dict[str, Any]:
     return copy.deepcopy(_cached_env_config(str(path)))
 
 
-def load_rewards_config(path: str | Path = "configs/rewards.yaml") -> dict[str, Any]:
+def load_rewards_config(path: str | Path = "configs/rewards_escape.yaml") -> dict[str, Any]:
     return copy.deepcopy(_cached_rewards_config(str(path)))
 
 

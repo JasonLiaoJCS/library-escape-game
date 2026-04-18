@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..config import REPO_ROOT, load_training_config, resolve_repo_path
 from ..eval.registry import discover_saved_models
+from ..game_modes import game_mode_label, infer_game_mode_from_models, normalize_game_mode, read_model_game_mode
 from ..gui.tensorboard_data import load_scalar_series
 from ..replay.io import load_replay
 from ..train.callbacks import format_seconds
@@ -64,13 +65,13 @@ def python_executable() -> Path:
     return Path(sys.executable)
 
 
-def checkpoint_root_for_mode(mode: str) -> Path:
+def checkpoint_root_for_mode(mode: str, game_mode: str) -> Path:
     training_cfg = load_training_config()
     if mode == "enemy":
-        return resolve_repo_path(training_cfg["single_agent"]["enemy_checkpoint_dir"])
+        return resolve_repo_path(training_cfg["single_agent"]["enemy_checkpoint_dir"]) / normalize_game_mode(game_mode)
     if mode == "player":
-        return resolve_repo_path(training_cfg["single_agent"]["player_checkpoint_dir"])
-    return resolve_repo_path(training_cfg["self_play"]["checkpoint_root_dir"])
+        return resolve_repo_path(training_cfg["single_agent"]["player_checkpoint_dir"]) / normalize_game_mode(game_mode)
+    return resolve_repo_path(training_cfg["self_play"]["checkpoint_root_dir"]) / normalize_game_mode(game_mode)
 
 
 def discover_training_runs(root: Path) -> list[dict]:
@@ -157,12 +158,14 @@ class PlayFrame(BasePanel):
         status = self.section(1, 0, "Status", columnspan=2)
 
         self.mode_var = tk.StringVar(value="Human vs Rule Enemy")
+        self.game_mode_var = tk.StringVar(value="collection")
         self.seed_var = tk.StringVar(value="42")
         self.enemy_model_var = tk.StringVar()
         self.player_model_var = tk.StringVar()
         self.record_replay_var = tk.BooleanVar(value=False)
         self.replay_path_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready.")
+        self.game_mode_hint_var = tk.StringVar(value="")
 
         ttk.Label(left, text="Mode").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
@@ -173,15 +176,25 @@ class PlayFrame(BasePanel):
             width=30,
         ).grid(row=1, column=0, sticky="ew", pady=(2, 10))
 
-        ttk.Label(left, text="Seed").grid(row=2, column=0, sticky="w")
-        ttk.Entry(left, textvariable=self.seed_var, width=12).grid(row=3, column=0, sticky="w", pady=(2, 10))
+        ttk.Label(left, text="Game mode").grid(row=2, column=0, sticky="w")
+        ttk.Combobox(
+            left,
+            textvariable=self.game_mode_var,
+            values=["collection", "escape"],
+            state="readonly",
+            width=30,
+        ).grid(row=3, column=0, sticky="ew", pady=(2, 4))
+        ttk.Label(left, textvariable=self.game_mode_hint_var, justify="left", wraplength=360).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        ttk.Checkbutton(left, text="Record replay", variable=self.record_replay_var).grid(row=4, column=0, sticky="w")
-        ttk.Entry(left, textvariable=self.replay_path_var).grid(row=5, column=0, sticky="ew", pady=(6, 6))
-        ttk.Button(left, text="Replay Path", command=self.browse_replay_path).grid(row=5, column=1, padx=(8, 0))
+        ttk.Label(left, text="Seed").grid(row=5, column=0, sticky="w")
+        ttk.Entry(left, textvariable=self.seed_var, width=12).grid(row=6, column=0, sticky="w", pady=(2, 10))
+
+        ttk.Checkbutton(left, text="Record replay", variable=self.record_replay_var).grid(row=7, column=0, sticky="w")
+        ttk.Entry(left, textvariable=self.replay_path_var).grid(row=8, column=0, sticky="ew", pady=(6, 6))
+        ttk.Button(left, text="Replay Path", command=self.browse_replay_path).grid(row=8, column=1, padx=(8, 0))
 
         button_row = ttk.Frame(left)
-        button_row.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        button_row.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(button_row, text="Start Game", style="Accent.TButton", command=self.launch).pack(side="left", padx=(0, 8))
         ttk.Button(button_row, text="Open Replays", command=lambda: open_path(REPO_ROOT / "replays")).pack(side="left", padx=(0, 8))
         ttk.Button(button_row, text="Open Checkpoints", command=lambda: open_path(REPO_ROOT / "checkpoints")).pack(side="left")
@@ -199,12 +212,17 @@ class PlayFrame(BasePanel):
             "Human vs Rule Enemy: no checkpoint required.\n"
             "Human vs Enemy Checkpoint: choose an enemy .zip model.\n"
             "AI vs AI: choose either or both checkpoints. Empty fields fall back to rule-based agents.\n"
+            "Collection = score-focused stealth mode.\n"
+            "Escape = collect required notes, then break out through the exit.\n"
+            "Checkpoint playback should usually use the same Game mode the model was trained in.\n"
             "If replay recording is enabled, the session is saved as a compressed .ler.gz file."
         )
         ttk.Label(right, text=tips, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 8))
         right.columnconfigure(0, weight=1)
 
         ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+        self.game_mode_var.trace_add("write", lambda *_: self._sync_game_mode_hint())
+        self._sync_game_mode_hint()
 
     def browse_model(self, variable: tk.StringVar) -> None:
         selected = filedialog.askopenfilename(
@@ -232,6 +250,7 @@ class PlayFrame(BasePanel):
     def launch(self) -> None:
         cmd = [str(python_executable())]
         mode = self.mode_var.get()
+        selected_mode = normalize_game_mode(self.game_mode_var.get())
         seed = self.seed_var.get().strip() or "42"
         if mode == "AI vs AI":
             cmd += ["-m", "library_escape.play.ai_vs_ai", "--seed", seed]
@@ -247,6 +266,10 @@ class PlayFrame(BasePanel):
                     return
                 cmd += ["--enemy-model", self.enemy_model_var.get().strip()]
 
+        if not self._confirm_model_game_mode(mode, selected_mode):
+            return
+        cmd += ["--game-mode", selected_mode]
+
         if self.record_replay_var.get():
             replay_path = self.replay_path_var.get().strip()
             if not replay_path:
@@ -257,7 +280,42 @@ class PlayFrame(BasePanel):
             cmd += ["--record-replay", replay_path]
 
         subprocess.Popen(cmd, cwd=str(REPO_ROOT))
-        self.status_var.set("Launched: " + " ".join(cmd[1:]))
+        self.status_var.set(f"Launched {game_mode_label(selected_mode)} mode: " + " ".join(cmd[1:]))
+
+    def _sync_game_mode_hint(self) -> None:
+        mode = normalize_game_mode(self.game_mode_var.get())
+        if mode == "collection":
+            self.game_mode_hint_var.set(
+                "Collection mode: score-focused stealth. The player tries to collect as many notes/exams as possible "
+                "before time runs out, while enemies try to spot the player and drain time."
+            )
+            return
+        self.game_mode_hint_var.set(
+            "Escape mode: objective-focused pursuit. The player must collect the required notes first, then reach the "
+            "exit. Trained checkpoints should usually be played back in the same Game mode they were trained for."
+        )
+
+    def _confirm_model_game_mode(self, launch_mode: str, selected_mode: str) -> bool:
+        model_paths: list[str] = []
+        if launch_mode in {"Human vs Enemy Checkpoint", "AI vs AI"} and self.enemy_model_var.get().strip():
+            model_paths.append(self.enemy_model_var.get().strip())
+        if launch_mode == "AI vs AI" and self.player_model_var.get().strip():
+            model_paths.append(self.player_model_var.get().strip())
+        mismatches: list[str] = []
+        for model_path in model_paths:
+            model_mode = read_model_game_mode(model_path)
+            if model_mode and model_mode != selected_mode:
+                mismatches.append(f"{Path(model_path).name}: trained for {game_mode_label(model_mode)}")
+        if not mismatches:
+            return True
+        return bool(
+            messagebox.askyesno(
+                "Mode mismatch",
+                "Selected checkpoints were trained for a different game mode:\n\n"
+                + "\n".join(mismatches)
+                + f"\n\nYou are trying to launch {game_mode_label(selected_mode)} mode. Continue anyway?",
+            )
+        )
 
 
 class TrainFrame(BasePanel):
@@ -279,8 +337,13 @@ class TrainFrame(BasePanel):
         logs.columnconfigure(0, weight=1)
 
         training_cfg = load_training_config()
+        single_agent_cfg = training_cfg.get("single_agent", {})
+        self_play_cfg = training_cfg.get("self_play", {})
+        single_curriculum_cfg = single_agent_cfg.get("opponent_curriculum", {})
+        self_play_curriculum_cfg = self_play_cfg.get("opponent_curriculum", {})
         presets = sorted(training_cfg.get("presets", {}).keys())
         self.mode_var = tk.StringVar(value="enemy")
+        self.game_mode_var = tk.StringVar(value="escape")
         self.preset_var = tk.StringVar(value=presets[1] if len(presets) > 1 else (presets[0] if presets else "balanced"))
         self.run_name_var = tk.StringVar()
         self.timesteps_var = tk.StringVar()
@@ -288,19 +351,21 @@ class TrainFrame(BasePanel):
         self.n_envs_var = tk.StringVar()
         self.seed_var = tk.StringVar(value="7")
         self.device_var = tk.StringVar(value="auto")
-        self.algorithm_var = tk.StringVar(value="ppo")
-        self.use_history_var = tk.BooleanVar(value=True)
-        self.sa_random_weight_var = tk.StringVar(value="0.20")
-        self.sa_heuristic_weight_var = tk.StringVar(value="0.60")
-        self.sa_history_weight_var = tk.StringVar(value="0.20")
-        self.sa_history_max_var = tk.StringVar(value="8")
-        self.sp_bootstrap_random_var = tk.StringVar(value="0.20")
-        self.sp_bootstrap_heuristic_var = tk.StringVar(value="0.80")
-        self.sp_latest_weight_var = tk.StringVar(value="0.50")
-        self.sp_historical_weight_var = tk.StringVar(value="0.50")
-        self.sp_history_max_var = tk.StringVar(value=str(training_cfg["self_play"].get("opponent_pool_size", 6)))
-        self.mappo_command_var = tk.StringVar(value=str(training_cfg["self_play"].get("opponent_curriculum", {}).get("mappo_recipe", {}).get("external_command", "")))
-        self.mappo_notes_var = tk.StringVar(value=str(training_cfg["self_play"].get("opponent_curriculum", {}).get("mappo_recipe", {}).get("notes", "")))
+        self.default_single_algorithm = str(single_agent_cfg.get("algorithm", "ppo"))
+        self.default_selfplay_algorithm = str(self_play_cfg.get("algorithm", "league_ppo"))
+        self.algorithm_var = tk.StringVar(value=self.default_single_algorithm)
+        self.use_history_var = tk.BooleanVar(value=bool(single_curriculum_cfg.get("use_history_pool", True)))
+        self.sa_random_weight_var = tk.StringVar(value=str(single_curriculum_cfg.get("random_weight", 0.20)))
+        self.sa_heuristic_weight_var = tk.StringVar(value=str(single_curriculum_cfg.get("heuristic_weight", 0.60)))
+        self.sa_history_weight_var = tk.StringVar(value=str(single_curriculum_cfg.get("history_weight", 0.20)))
+        self.sa_history_max_var = tk.StringVar(value=str(single_curriculum_cfg.get("max_history_pool", 8)))
+        self.sp_bootstrap_random_var = tk.StringVar(value=str(self_play_curriculum_cfg.get("bootstrap_random_weight", 0.20)))
+        self.sp_bootstrap_heuristic_var = tk.StringVar(value=str(self_play_curriculum_cfg.get("bootstrap_heuristic_weight", 0.80)))
+        self.sp_latest_weight_var = tk.StringVar(value=str(self_play_curriculum_cfg.get("latest_weight", 0.50)))
+        self.sp_historical_weight_var = tk.StringVar(value=str(self_play_curriculum_cfg.get("historical_weight", 0.50)))
+        self.sp_history_max_var = tk.StringVar(value=str(self_play_cfg.get("opponent_pool_size", 6)))
+        self.mappo_command_var = tk.StringVar(value=str(self_play_curriculum_cfg.get("mappo_recipe", {}).get("external_command", "")))
+        self.mappo_notes_var = tk.StringVar(value=str(self_play_curriculum_cfg.get("mappo_recipe", {}).get("notes", "")))
 
         self.run_dir_var = tk.StringVar(value="No active run")
         self.phase_var = tk.StringVar(value="Idle")
@@ -309,31 +374,35 @@ class TrainFrame(BasePanel):
         self.eta_var = tk.StringVar(value="--:--")
         self.fps_var = tk.StringVar(value="0")
         self.reward_var = tk.StringVar(value="n/a")
+        self.game_mode_hint_var = tk.StringVar(value="")
 
         ttk.Label(controls, text="Mode").grid(row=0, column=0, sticky="w")
         self.mode_combo = ttk.Combobox(controls, textvariable=self.mode_var, values=["enemy", "player", "selfplay"], state="readonly", width=18)
         self.mode_combo.grid(row=1, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Preset").grid(row=2, column=0, sticky="w")
-        ttk.Combobox(controls, textvariable=self.preset_var, values=presets, state="readonly", width=18).grid(row=3, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Run name").grid(row=4, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.run_name_var, width=22).grid(row=5, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Timesteps / round").grid(row=6, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.timesteps_var, width=22).grid(row=7, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Rounds (selfplay)").grid(row=8, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.rounds_var, width=22).grid(row=9, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Vector envs").grid(row=10, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.n_envs_var, width=22).grid(row=11, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Seed").grid(row=12, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.seed_var, width=22).grid(row=13, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Device").grid(row=14, column=0, sticky="w")
-        ttk.Combobox(controls, textvariable=self.device_var, values=["auto", "cpu", "cuda"], state="readonly", width=18).grid(row=15, column=0, sticky="ew", pady=(2, 10))
+        ttk.Label(controls, text="Game mode").grid(row=2, column=0, sticky="w")
+        ttk.Combobox(controls, textvariable=self.game_mode_var, values=["collection", "escape"], state="readonly", width=18).grid(row=3, column=0, sticky="ew", pady=(2, 4))
+        ttk.Label(controls, textvariable=self.game_mode_hint_var, justify="left", wraplength=320).grid(row=4, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(controls, text="Preset").grid(row=5, column=0, sticky="w")
+        ttk.Combobox(controls, textvariable=self.preset_var, values=presets, state="readonly", width=18).grid(row=6, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(controls, text="Run name").grid(row=7, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.run_name_var, width=22).grid(row=8, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(controls, text="Timesteps / round").grid(row=9, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.timesteps_var, width=22).grid(row=10, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(controls, text="Rounds (selfplay)").grid(row=11, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.rounds_var, width=22).grid(row=12, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(controls, text="Vector envs").grid(row=13, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.n_envs_var, width=22).grid(row=14, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(controls, text="Seed").grid(row=15, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.seed_var, width=22).grid(row=16, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(controls, text="Device").grid(row=17, column=0, sticky="w")
+        ttk.Combobox(controls, textvariable=self.device_var, values=["auto", "cpu", "cuda"], state="readonly", width=18).grid(row=18, column=0, sticky="ew", pady=(2, 10))
 
         button_bar = ttk.Frame(controls)
-        button_bar.grid(row=16, column=0, sticky="ew", pady=(8, 0))
+        button_bar.grid(row=19, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(button_bar, text="Start Training", style="Accent.TButton", command=self.start_training).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Stop", command=self.stop_training).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Open Run Folder", command=self.open_run_folder).pack(side="left")
-        ttk.Button(controls, text="Open TensorBoard Server", command=self.open_tensorboard).grid(row=17, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(controls, text="Open TensorBoard Server", command=self.open_tensorboard).grid(row=20, column=0, sticky="ew", pady=(10, 0))
         controls.columnconfigure(0, weight=1)
 
         ttk.Label(advanced, text="Algorithm").grid(row=0, column=0, sticky="w")
@@ -390,18 +459,20 @@ class TrainFrame(BasePanel):
         self.progress_path: Path | None = None
 
         self.mode_var.trace_add("write", lambda *_: self._sync_mode_fields())
+        self.game_mode_var.trace_add("write", lambda *_: self._sync_game_mode_hint())
         self._sync_mode_fields()
+        self._sync_game_mode_hint()
 
     def _sync_mode_fields(self) -> None:
         mode = self.mode_var.get()
         if mode == "selfplay":
             values = list(self.SELFPLAY_ALGOS)
             if self.algorithm_var.get() not in values:
-                self.algorithm_var.set(values[0])
+                self.algorithm_var.set(self.default_selfplay_algorithm if self.default_selfplay_algorithm in values else values[0])
         else:
             values = list(self.SINGLE_ALGOS)
             if self.algorithm_var.get() not in values:
-                self.algorithm_var.set(values[0])
+                self.algorithm_var.set(self.default_single_algorithm if self.default_single_algorithm in values else values[0])
         self.algorithm_combo.configure(values=values)
 
     def _build_overrides_payload(self) -> dict:
@@ -440,6 +511,7 @@ class TrainFrame(BasePanel):
 
     def _build_train_command(self) -> list[str]:
         mode = self.mode_var.get()
+        game_mode = normalize_game_mode(self.game_mode_var.get())
         seed = self.seed_var.get().strip() or "7"
         run_name = self.run_name_var.get().strip() or timestamped_run_name(mode)
         self.run_name_var.set(run_name)
@@ -457,6 +529,8 @@ class TrainFrame(BasePanel):
             module,
             "--preset",
             self.preset_var.get(),
+            "--game-mode",
+            game_mode,
             "--seed",
             seed,
             "--run-name",
@@ -475,10 +549,23 @@ class TrainFrame(BasePanel):
         overrides = self._build_overrides_payload()
         cmd += ["--overrides-json", json.dumps(overrides, separators=(",", ":"), ensure_ascii=True)]
 
-        self.current_run_dir = checkpoint_root_for_mode(mode) / run_name
+        self.current_run_dir = checkpoint_root_for_mode(mode, game_mode) / run_name
         self.progress_path = self.current_run_dir / "progress.json"
         self.run_dir_var.set(str(self.current_run_dir))
         return cmd
+
+    def _sync_game_mode_hint(self) -> None:
+        mode = normalize_game_mode(self.game_mode_var.get())
+        if mode == "collection":
+            self.game_mode_hint_var.set(
+                "Collection training: optimize score under time pressure. Use this when you want agents to learn "
+                "stealthy collection, denial, pressure, and score suppression rather than literal escape."
+            )
+            return
+        self.game_mode_hint_var.set(
+            "Escape training: optimize win/lose objective completion. Use this when you want agents to learn "
+            "route planning, pursuit, denial, guarding the exit, and coordinated catch-versus-escape behavior."
+        )
 
     def start_training(self) -> None:
         if self.process is not None and self.process.poll() is None:
@@ -624,7 +711,8 @@ class ResultsFrame(BasePanel):
         for item in self.run_summaries:
             mode = item["summary"].get("mode", "run")
             algorithm = item["summary"].get("algorithm", "ppo")
-            self.run_list.insert(tk.END, f"{item['path'].name}  [{mode} | {algorithm}]")
+            game_mode = normalize_game_mode(item["summary"].get("game_mode", item["summary"].get("env_config", {}).get("world", {}).get("game_mode", "escape")))
+            self.run_list.insert(tk.END, f"{item['path'].name}  [{game_mode_label(game_mode)} | {mode} | {algorithm}]")
 
     def load_selected_run(self) -> None:
         selection = self.run_list.curselection()
@@ -637,6 +725,7 @@ class ResultsFrame(BasePanel):
 
         lines = [
             f"Mode: {summary.get('mode')}",
+            f"Game mode: {game_mode_label(normalize_game_mode(summary.get('game_mode', summary.get('env_config', {}).get('world', {}).get('game_mode', 'escape'))))}",
             f"Algorithm: {summary.get('algorithm', 'n/a')}",
             f"Run dir: {self.selected_run_dir}",
             f"Final model: {summary.get('final_model') or summary.get('final_enemy_model')}",
@@ -733,11 +822,14 @@ class ResultsFrame(BasePanel):
         if self.selected_run_dir is None:
             return
         player_model, enemy_model = self._selected_models()
+        summary = read_json(self.selected_run_dir / "training_summary.json")
+        game_mode = normalize_game_mode(summary.get("game_mode", summary.get("env_config", {}).get("world", {}).get("game_mode", "escape")))
         cmd = [str(python_executable()), "-m", "library_escape.play.ai_vs_ai", "--seed", "42"]
         if player_model:
             cmd += ["--player-model", player_model]
         if enemy_model:
             cmd += ["--enemy-model", enemy_model]
+        cmd += ["--game-mode", game_mode]
         subprocess.Popen(cmd, cwd=str(REPO_ROOT))
 
 
@@ -801,7 +893,8 @@ class TensorBoardFrame(BasePanel):
         self.run_list.delete(0, tk.END)
         for item in self.run_summaries:
             mode = item["summary"].get("mode", "run")
-            self.run_list.insert(tk.END, f"{item['path'].name}  [{mode}]")
+            game_mode = normalize_game_mode(item["summary"].get("game_mode", item["summary"].get("env_config", {}).get("world", {}).get("game_mode", "escape")))
+            self.run_list.insert(tk.END, f"{item['path'].name}  [{game_mode_label(game_mode)} | {mode}]")
 
     def load_selected_run(self) -> None:
         selection = self.run_list.curselection()
@@ -1177,10 +1270,12 @@ class ConfigFrame(BasePanel):
 
         buttons = [
             ("Quick Start Guide", REPO_ROOT / "docs" / "OPERATION_QUICKSTART.md"),
-            ("Rewards", REPO_ROOT / "configs" / "rewards.yaml"),
+            ("Collection Rewards", REPO_ROOT / "configs" / "rewards_collection.yaml"),
+            ("Escape Rewards", REPO_ROOT / "configs" / "rewards_escape.yaml"),
             ("Environment", REPO_ROOT / "configs" / "env.yaml"),
             ("Training", REPO_ROOT / "configs" / "training.yaml"),
             ("Map", REPO_ROOT / "configs" / "map.json"),
+            ("Game Modes Helper", REPO_ROOT / "library_escape" / "game_modes.py"),
             ("Operation Guide", REPO_ROOT / "docs" / "OPERATION_GUIDE.md"),
             ("Project Root", REPO_ROOT),
         ]
@@ -1192,12 +1287,19 @@ class ConfigFrame(BasePanel):
             "Quick operation guide: docs/OPERATION_QUICKSTART.md\n"
             "Full technical guide: docs/OPERATION_GUIDE.md\n"
             "\n"
-            "Reward tuning: configs/rewards.yaml\n"
+            "Collection-mode rewards: configs/rewards_collection.yaml\n"
+            "Escape-mode rewards: configs/rewards_escape.yaml\n"
             "Observation / action / frame skip: configs/env.yaml\n"
             "Training presets / algorithms / curriculum / MAPPO recipe: configs/training.yaml\n"
             "Map layout and spawns: configs/map.json\n"
+            "User-facing mode mapping: library_escape/game_modes.py\n"
+            "\n"
+            "In both Play and Train, choose a Game mode first:\n"
+            "Collection = score / pressure / stealth collection.\n"
+            "Escape = required notes first, then escape through the exit.\n"
             "\n"
             "Use Train for enemy / player / self-play with PPO, Maskable PPO, or external MAPPO recipe.\n"
+            "Checkpoints should usually be played in the same Game mode they were trained in.\n"
             "Use TensorBoard for built-in scalar inspection.\n"
             "Use Leaderboard to build automatic player/enemy Elo tables.\n"
             "Use Replay to browse .ler.gz files and export frame sequences."

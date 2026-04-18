@@ -1,0 +1,60 @@
+global:
+  gamma: 0.99
+  clip_range: 320.0
+  zero_sum_mix: 0.18
+
+enemy:
+  catch_player: 0.0
+  lose_on_escape: 0.0
+  timeout_win: 0.0
+  detection_event_bonus: 8.0
+  primary_visible_per_step: 0.55
+  support_visible_per_step: 0.22
+  team_visible_ratio_per_step: 0.18
+  player_collect_note_penalty: -16.0
+  player_collect_exam_penalty: -26.0
+  player_collect_powerup_penalty: -5.0
+  player_objective_complete_penalty: -24.0
+  timeout_score_denial_bonus: 42.0
+  stalemate_score_denial_bonus: 28.0
+  time_penalty: -0.002
+  wall_penalty: -0.10
+  idle_penalty: -0.010
+  stalemate: -12.0
+  potential:
+    enabled: true
+    capture_pressure: 1.10
+    team_visibility: 1.55
+    objective_denial: 3.10
+    exit_guard: 0.0
+    encirclement: 0.95
+
+player:
+  collect_note: 14.0
+  collect_exam: 22.0
+  collect_coffee: 4.0
+  collect_freeze: 5.0
+  objective_complete_bonus: 24.0
+  detection_event_penalty: -8.0
+  escape: 0.0
+  caught: 0.0
+  timeout_loss: 0.0
+  timeout_score_progress_bonus: 42.0
+  stalemate_score_progress_bonus: 28.0
+  primary_seen_per_step: -0.40
+  support_seen_per_step: -0.16
+  multi_seen_penalty_per_step: -0.14
+  time_penalty: -0.004
+  wall_penalty: -0.10
+  idle_penalty: -0.010
+  stalemate: -12.0
+  potential:
+    enabled: true
+    objective_progress: 4.80
+    target_navigation: 2.10
+    escape_navigation: 0.0
+    threat_margin: 1.35
+    exit_window: 0.0
+
+anti_exploit:
+  no_progress_penalty: -0.02
