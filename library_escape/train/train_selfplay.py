@@ -12,7 +12,7 @@ from ..agents.opponent_pool import OpponentPool, PooledController, WeightedContr
 from ..agents.ppo_agent import SB3PolicyController
 from ..agents.rule_based_enemy import RandomEnemyController, RuleBasedEnemyController
 from ..agents.rule_based_player import HeuristicPlayerController, RandomPlayerController
-from ..config import REPO_ROOT, load_training_config
+from ..config import REPO_ROOT, load_training_config, read_json, resolve_repo_path
 from ..game_modes import build_game_mode_env_config, game_mode_label, normalize_game_mode
 from .callbacks import EvalHistoryCallback, TrainingStatusCallback
 from .common import (
@@ -45,6 +45,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-envs", type=int, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--resume-run", type=str, default=None, help="Resume self-play from an earlier run directory.")
+    parser.add_argument("--resume-enemy", type=str, default=None, help="Resume enemy policy from a checkpoint path.")
+    parser.add_argument("--resume-player", type=str, default=None, help="Resume player policy from a checkpoint path.")
     parser.add_argument("--overrides-json", type=str, default=None, help="Deep-merge overrides for env/train config.")
     return parser.parse_args()
 
@@ -99,6 +102,28 @@ def _make_selfplay_opponent_factory(pool: OpponentPool, fallback_factory, curric
         return controller
 
     return _factory
+
+
+def _resolve_resume_selfplay_models(args: argparse.Namespace) -> tuple[Path | None, Path | None, Path | None]:
+    resume_run_dir = resolve_repo_path(args.resume_run) if args.resume_run else None
+    resume_enemy_model = resolve_repo_path(args.resume_enemy) if args.resume_enemy else None
+    resume_player_model = resolve_repo_path(args.resume_player) if args.resume_player else None
+
+    if resume_run_dir is not None:
+        summary_path = resume_run_dir / "training_summary.json"
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Resume run summary not found: {summary_path}")
+        summary = read_json(summary_path)
+        if resume_enemy_model is None and summary.get("final_enemy_model"):
+            resume_enemy_model = resolve_repo_path(summary["final_enemy_model"])
+        if resume_player_model is None and summary.get("final_player_model"):
+            resume_player_model = resolve_repo_path(summary["final_player_model"])
+
+    for label, model_path in (("enemy", resume_enemy_model), ("player", resume_player_model)):
+        if model_path is not None and not model_path.exists():
+            raise FileNotFoundError(f"Resume {label} checkpoint not found: {model_path}")
+
+    return resume_run_dir, resume_enemy_model, resume_player_model
 
 
 def _train_phase(
@@ -392,8 +417,30 @@ def main() -> None:
     progress_history_path = run_dir / "progress_history.jsonl"
     eval_history_path = run_dir / "eval_history.jsonl"
 
-    current_enemy_model: Path | None = None
-    current_player_model: Path | None = None
+    resume_run_dir, current_enemy_model, current_player_model = _resolve_resume_selfplay_models(args)
+
+    if current_enemy_model is not None:
+        enemy_pool.add(
+            _cached_factory(
+                lambda path=current_enemy_model, env_cfg=deepcopy(env_config): SB3PolicyController(
+                    "enemy",
+                    path,
+                    env_config=env_cfg,
+                    deterministic=False,
+                )
+            )
+        )
+    if current_player_model is not None:
+        player_pool.add(
+            _cached_factory(
+                lambda path=current_player_model, env_cfg=deepcopy(env_config): SB3PolicyController(
+                    "player",
+                    path,
+                    env_config=env_cfg,
+                    deterministic=False,
+                )
+            )
+        )
 
     phase_counter = 0
     for round_idx in range(1, rounds + 1):
@@ -495,6 +542,9 @@ def main() -> None:
             "preset": args.preset,
             "game_mode": game_mode,
             "game_mode_label": game_mode_label(game_mode),
+            "resume_from_run": resume_run_dir,
+            "resume_enemy_model": current_enemy_model,
+            "resume_player_model": current_player_model,
         },
     )
 

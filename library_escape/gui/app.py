@@ -368,6 +368,8 @@ class TrainFrame(BasePanel):
         self.n_envs_var = tk.StringVar()
         self.seed_var = tk.StringVar(value="7")
         self.device_var = tk.StringVar(value="auto")
+        self.resume_path_var = tk.StringVar()
+        self.resume_label_var = tk.StringVar(value="Resume checkpoint (optional)")
         self.default_single_algorithm = str(single_agent_cfg.get("algorithm", "ppo"))
         self.default_selfplay_algorithm = str(self_play_cfg.get("algorithm", "league_ppo"))
         self.algorithm_var = tk.StringVar(value=self.default_single_algorithm)
@@ -413,13 +415,19 @@ class TrainFrame(BasePanel):
         ttk.Entry(controls, textvariable=self.seed_var, width=22).grid(row=16, column=0, sticky="ew", pady=(2, 8))
         ttk.Label(controls, text="Device").grid(row=17, column=0, sticky="w")
         ttk.Combobox(controls, textvariable=self.device_var, values=["auto", "cpu", "cuda"], state="readonly", width=18).grid(row=18, column=0, sticky="ew", pady=(2, 10))
+        ttk.Label(controls, textvariable=self.resume_label_var).grid(row=19, column=0, sticky="w")
+        resume_row = ttk.Frame(controls)
+        resume_row.grid(row=20, column=0, sticky="ew", pady=(2, 10))
+        resume_row.columnconfigure(0, weight=1)
+        ttk.Entry(resume_row, textvariable=self.resume_path_var, width=22).grid(row=0, column=0, sticky="ew")
+        ttk.Button(resume_row, text="Browse", command=self.browse_resume_path).grid(row=0, column=1, padx=(8, 0))
 
         button_bar = ttk.Frame(controls)
-        button_bar.grid(row=19, column=0, sticky="ew", pady=(8, 0))
+        button_bar.grid(row=21, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(button_bar, text="Start Training", style="Accent.TButton", command=self.start_training).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Stop", command=self.stop_training).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Open Run Folder", command=self.open_run_folder).pack(side="left")
-        ttk.Button(controls, text="Open TensorBoard Server", command=self.open_tensorboard).grid(row=20, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(controls, text="Open TensorBoard Server", command=self.open_tensorboard).grid(row=22, column=0, sticky="ew", pady=(10, 0))
         controls.columnconfigure(0, weight=1)
 
         ttk.Label(advanced, text="Algorithm").grid(row=0, column=0, sticky="w")
@@ -486,11 +494,28 @@ class TrainFrame(BasePanel):
             values = list(self.SELFPLAY_ALGOS)
             if self.algorithm_var.get() not in values:
                 self.algorithm_var.set(self.default_selfplay_algorithm if self.default_selfplay_algorithm in values else values[0])
+            self.resume_label_var.set("Resume self-play run (optional)")
         else:
             values = list(self.SINGLE_ALGOS)
             if self.algorithm_var.get() not in values:
                 self.algorithm_var.set(self.default_single_algorithm if self.default_single_algorithm in values else values[0])
+            self.resume_label_var.set("Resume checkpoint (optional)")
         self.algorithm_combo.configure(values=values)
+
+    def browse_resume_path(self) -> None:
+        mode = self.mode_var.get()
+        if mode == "selfplay":
+            initial_dir = REPO_ROOT / "checkpoints" / "selfplay"
+            selected = filedialog.askdirectory(title="Select self-play run folder", initialdir=str(initial_dir))
+        else:
+            initial_dir = REPO_ROOT / "checkpoints"
+            selected = filedialog.askopenfilename(
+                title="Select checkpoint",
+                filetypes=[("ZIP checkpoint", "*.zip"), ("All files", "*.*")],
+                initialdir=str(initial_dir),
+            )
+        if selected:
+            self.resume_path_var.set(selected)
 
     def _build_overrides_payload(self) -> dict:
         mode = self.mode_var.get()
@@ -562,6 +587,11 @@ class TrainFrame(BasePanel):
             cmd += ["--n-envs", self.n_envs_var.get().strip()]
         if self.device_var.get().strip():
             cmd += ["--device", self.device_var.get().strip()]
+        if self.resume_path_var.get().strip():
+            if mode == "selfplay":
+                cmd += ["--resume-run", self.resume_path_var.get().strip()]
+            else:
+                cmd += ["--resume", self.resume_path_var.get().strip()]
 
         overrides = self._build_overrides_payload()
         cmd += ["--overrides-json", json.dumps(overrides, separators=(",", ":"), ensure_ascii=True)]

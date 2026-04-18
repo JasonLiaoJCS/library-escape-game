@@ -893,6 +893,30 @@ checkpoints/selfplay/escape/<run_name>/
 - 想看「這個 run 最終成果」：用 `Results`
 - 想自由拼裝對戰：用 `Play`
 
+#### 明天想接著今天的 policy 繼續練，怎麼做
+
+現在 GUI `Train` 頁已經支援續訓。
+
+- 如果 `Mode = enemy` 或 `player`
+  - 用 `Resume checkpoint (optional)`
+  - 直接選昨天的 `.zip`
+  - 例如：
+    - `checkpoints/enemy/escape/<run_name>/models/enemy_latest.zip`
+    - `checkpoints/player_single/escape/<run_name>/models/player_latest.zip`
+- 如果 `Mode = selfplay`
+  - 用 `Resume self-play run (optional)`
+  - 直接選昨天整個 self-play run 資料夾
+  - 例如：
+    - `checkpoints/selfplay/escape/selfplay_escape_overnight_01/`
+
+`selfplay` 續訓時，系統會自動讀那個 run 的：
+
+- `training_summary.json`
+- `final_enemy_model`
+- `final_player_model`
+
+然後從那兩個最終 policy 接著往下做新一輪 self-play。
+
 #### deterministic=True / deterministic=False 到底差在哪裡
 
 這個專案現在採用的是下面這個標準定義：

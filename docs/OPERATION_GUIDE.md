@@ -631,6 +631,7 @@ GUI 主檔：
 - 先選 `Collection` 或 `Escape`
 - 選 preset
 - 改 seed / timesteps / rounds / n-envs / device
+- 選擇是否從舊 checkpoint / 舊 self-play run 續訓
 - 改 algorithm：
   - `ppo`
   - `maskable_ppo`
@@ -653,6 +654,14 @@ GUI 主檔：
 - `Mode` 決定你訓練的是 `enemy` / `player` / `selfplay`
 - `Game mode` 決定你是在 `Collection` 還是 `Escape` 規則下訓練
 - `Run dir` 會直接顯示目前這個訓練 run 的實際輸出位置
+- `Resume checkpoint (optional)`
+  - 給 `enemy` / `player` 單訓用
+  - 直接選舊的 `.zip` checkpoint，新的訓練會從那個 policy 接著練
+- `Resume self-play run (optional)`
+  - 給 `selfplay` 用
+  - 直接選舊的 self-play run 資料夾
+  - 系統會從那個 run 的 `training_summary.json` 自動讀出 `final_enemy_model` 和 `final_player_model`
+  - 新的 self-play run 會從那兩個最終 policy 接著訓練
 
 ### 7.3 Results
 
