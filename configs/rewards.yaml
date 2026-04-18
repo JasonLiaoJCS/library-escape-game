@@ -1,0 +1,40 @@
+global:
+  gamma: 0.99
+  clip_range: 250.0
+  zero_sum_mix: 0.10
+
+enemy:
+  catch_player: 140.0
+  player_in_cone_per_step: 0.70
+  deny_escape_bonus: 45.0
+  time_penalty: -0.008
+  wall_penalty: -0.12
+  idle_penalty: -0.01
+  stalemate: -10.0
+  potential:
+    enabled: true
+    capture_progress: 2.80
+    visibility_lock: 0.75
+    escape_pressure: 1.40
+
+player:
+  collect_note: 28.0
+  collect_exam: 42.0
+  collect_coffee: 8.0
+  collect_freeze: 10.0
+  escape: 160.0
+  seen_per_step: -0.35
+  caught: -160.0
+  time_bonus: 0.010
+  wall_penalty: -0.12
+  idle_penalty: -0.01
+  stalemate: -10.0
+  potential:
+    enabled: true
+    objective_progress: 2.50
+    target_navigation: 2.20
+    escape_navigation: 3.20
+    stealth_margin: 1.00
+
+anti_exploit:
+  no_progress_penalty: -0.01

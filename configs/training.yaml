@@ -1,0 +1,134 @@
+single_agent:
+  algorithm: ppo
+  total_timesteps: 300000
+  n_envs: 8
+  learning_rate: 0.00025
+  n_steps: 1024
+  batch_size: 256
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.02
+  vf_coef: 0.5
+  device: auto
+  enemy_checkpoint_dir: checkpoints/enemy
+  player_checkpoint_dir: checkpoints/player_single
+  eval_freq: 8192
+  checkpoint_freq: 8192
+  log_interval_seconds: 1.0
+  eval_episodes: 10
+  resume_path: ""
+  policy:
+    hidden_sizes: [256, 256]
+    activation_fn: tanh
+  vec_normalize:
+    enabled: true
+    norm_obs: true
+    norm_reward: true
+    clip_obs: 10.0
+    clip_reward: 10.0
+  opponent_curriculum:
+    use_history_pool: true
+    max_history_pool: 8
+    random_weight: 0.20
+    heuristic_weight: 0.60
+    history_weight: 0.20
+
+self_play:
+  algorithm: league_ppo
+  rounds: 4
+  timesteps_per_round: 120000
+  n_envs: 4
+  learning_rate: 0.00025
+  n_steps: 1024
+  batch_size: 256
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.02
+  vf_coef: 0.5
+  opponent_pool_size: 6
+  checkpoint_root_dir: checkpoints/selfplay
+  eval_freq: 8192
+  checkpoint_freq: 8192
+  log_interval_seconds: 1.0
+  policy:
+    hidden_sizes: [256, 256]
+    activation_fn: tanh
+  vec_normalize:
+    enabled: true
+    norm_obs: true
+    norm_reward: true
+    clip_obs: 10.0
+    clip_reward: 10.0
+  opponent_curriculum:
+    bootstrap_random_weight: 0.20
+    bootstrap_heuristic_weight: 0.80
+    latest_weight: 0.50
+    historical_weight: 0.50
+    max_history_pool: 6
+    mappo_recipe:
+      enabled: false
+      external_command: ""
+      notes: "For a full external MAPPO backend, point this command at an installed official MAPPO runner."
+
+evaluation:
+  episodes: 20
+  render_fps: 60
+
+presets:
+  fast:
+    single_agent:
+      total_timesteps: 120000
+      n_envs: 4
+      eval_freq: 4096
+      checkpoint_freq: 4096
+      n_steps: 768
+    self_play:
+      rounds: 2
+      timesteps_per_round: 60000
+      n_envs: 2
+      eval_freq: 4096
+      checkpoint_freq: 4096
+      n_steps: 768
+    env_overrides:
+      timing:
+        rl_frame_skip: 6
+      randomization:
+        enabled: true
+  balanced:
+    single_agent:
+      total_timesteps: 300000
+      n_envs: 8
+      eval_freq: 8192
+      checkpoint_freq: 8192
+    self_play:
+      rounds: 4
+      timesteps_per_round: 120000
+      n_envs: 4
+      eval_freq: 8192
+      checkpoint_freq: 8192
+    env_overrides:
+      randomization:
+        enabled: true
+  quality:
+    single_agent:
+      total_timesteps: 600000
+      n_envs: 12
+      n_steps: 1536
+      batch_size: 384
+      eval_freq: 12288
+      checkpoint_freq: 12288
+    self_play:
+      rounds: 6
+      timesteps_per_round: 180000
+      n_envs: 6
+      n_steps: 1536
+      batch_size: 384
+      eval_freq: 12288
+      checkpoint_freq: 12288
+    env_overrides:
+      timing:
+        rl_frame_skip: 4
+      randomization:
+        enabled: true
