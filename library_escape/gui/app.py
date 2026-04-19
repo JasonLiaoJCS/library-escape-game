@@ -874,7 +874,7 @@ class TrainFrame(BasePanel):
         self.rounds_var = tk.StringVar()
         self.n_envs_var = tk.StringVar()
         self.seed_var = tk.StringVar(value="7")
-        self.device_var = tk.StringVar(value="auto")
+        self.device_var = tk.StringVar(value="cuda")
         self.resume_path_var = tk.StringVar()
         self.resume_label_var = tk.StringVar(value="Resume checkpoint (optional)")
         self.default_single_algorithm = str(single_agent_cfg.get("algorithm", "ppo"))

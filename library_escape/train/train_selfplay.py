@@ -24,9 +24,11 @@ from .common import (
     build_vec_env,
     default_device,
     find_resume_vecnormalize_path,
+    format_device_runtime,
     make_single_agent_env_factory,
     override_model_hyperparameters,
     resolve_algorithm_spec,
+    resolve_device_runtime,
     resolve_selfplay_run_dir,
     save_vecnormalize_artifacts,
     wrap_with_vec_normalize,
@@ -236,6 +238,7 @@ def _train_phase(
 
     if resume_model_path is not None:
         model = algo_spec.model_cls.load(str(resume_model_path), env=vec_env, device=default_device(train_cfg))
+        model.tensorboard_log = str(tensorboard_dir)
         override_model_hyperparameters(
             model,
             learning_rate=float(train_cfg["learning_rate"]),
@@ -386,6 +389,8 @@ def main() -> None:
     if args.device is not None:
         train_cfg["device"] = args.device
     env_config, train_cfg = apply_runtime_overrides(env_config, train_cfg, args.overrides_json)
+    device_info = resolve_device_runtime(train_cfg)
+    print(format_device_runtime(device_info))
 
     run_dir = resolve_selfplay_run_dir(train_cfg, args.run_name, game_mode)
     algo_spec = resolve_algorithm_spec(train_cfg.get("algorithm", "league_ppo"))
@@ -525,6 +530,7 @@ def main() -> None:
         {
             "mode": "self_play",
             "algorithm": algo_spec.summary_name,
+            "device_info": device_info.to_dict(),
             "run_dir": run_dir,
             "enemy_root": enemy_root,
             "player_root": player_root,

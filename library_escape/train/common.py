@@ -47,6 +47,28 @@ class AlgorithmSpec:
     uses_action_masks: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class DeviceRuntimeInfo:
+    requested: str
+    selected: str
+    torch_version: str | None
+    cuda_available: bool | None
+    cuda_version: str | None
+    device_name: str | None
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested": self.requested,
+            "selected": self.selected,
+            "torch_version": self.torch_version,
+            "cuda_available": self.cuda_available,
+            "cuda_version": self.cuda_version,
+            "device_name": self.device_name,
+            "reason": self.reason,
+        }
+
+
 def apply_preset(
     mode_key: str,
     preset_name: str | None,
@@ -356,8 +378,131 @@ def save_vecnormalize_artifacts(vec_env, model_output_path: Path) -> None:
     )
 
 
+def _normalize_requested_device(requested_device: str | None) -> str:
+    normalized = str(requested_device or "auto").strip().lower()
+    return normalized or "auto"
+
+
+def _device_runtime_info_from_torch(requested_device: str | None, torch_module: Any) -> DeviceRuntimeInfo:
+    requested = _normalize_requested_device(requested_device)
+    torch_version = str(getattr(torch_module, "__version__", "unknown"))
+    cuda_version = getattr(getattr(torch_module, "version", None), "cuda", None)
+    cuda_module = getattr(torch_module, "cuda", None)
+    cuda_available = bool(cuda_module is not None and cuda_module.is_available())
+    device_name: str | None = None
+    if cuda_available and cuda_module is not None:
+        try:
+            device_name = str(cuda_module.get_device_name(0))
+        except Exception:
+            device_name = None
+
+    cpu_only_build = "+cpu" in torch_version.lower()
+
+    if requested == "auto":
+        if cuda_available:
+            return DeviceRuntimeInfo(
+                requested=requested,
+                selected="cuda",
+                torch_version=torch_version,
+                cuda_available=True,
+                cuda_version=str(cuda_version) if cuda_version is not None else None,
+                device_name=device_name,
+                reason="Auto-selected CUDA because PyTorch reports a CUDA-capable GPU.",
+            )
+        reason = "PyTorch reports that CUDA is unavailable."
+        if cpu_only_build:
+            reason = f"Installed PyTorch build is CPU-only ({torch_version})."
+        return DeviceRuntimeInfo(
+            requested=requested,
+            selected="cpu",
+            torch_version=torch_version,
+            cuda_available=False,
+            cuda_version=str(cuda_version) if cuda_version is not None else None,
+            device_name=device_name,
+            reason=reason,
+        )
+
+    if requested == "cpu":
+        return DeviceRuntimeInfo(
+            requested=requested,
+            selected="cpu",
+            torch_version=torch_version,
+            cuda_available=cuda_available,
+            cuda_version=str(cuda_version) if cuda_version is not None else None,
+            device_name=device_name,
+            reason="CPU was selected explicitly.",
+        )
+
+    if requested.startswith("cuda"):
+        if not cuda_available:
+            detail = "PyTorch reports that CUDA is unavailable."
+            if cpu_only_build:
+                detail = f"Installed PyTorch build is CPU-only ({torch_version})."
+            raise RuntimeError(
+                f"Requested device '{requested}', but CUDA is unavailable. "
+                f"{detail} Install a CUDA-enabled PyTorch build to use GPU acceleration."
+            )
+        return DeviceRuntimeInfo(
+            requested=requested,
+            selected=requested,
+            torch_version=torch_version,
+            cuda_available=True,
+            cuda_version=str(cuda_version) if cuda_version is not None else None,
+            device_name=device_name,
+            reason="CUDA was selected explicitly.",
+        )
+
+    return DeviceRuntimeInfo(
+        requested=requested,
+        selected=requested,
+        torch_version=torch_version,
+        cuda_available=cuda_available,
+        cuda_version=str(cuda_version) if cuda_version is not None else None,
+        device_name=device_name,
+        reason="Using a custom device string from the training config.",
+    )
+
+
+def resolve_device_runtime(train_cfg: dict[str, Any]) -> DeviceRuntimeInfo:
+    requested = train_cfg.get("device", "auto")
+    try:
+        import torch
+    except ImportError as exc:
+        normalized = _normalize_requested_device(requested)
+        if normalized.startswith("cuda"):
+            raise RuntimeError(
+                f"Requested device '{normalized}', but PyTorch is not installed. "
+                "Install the RL dependencies and a CUDA-enabled PyTorch build first."
+            ) from exc
+        selected = "cpu" if normalized == "auto" else normalized
+        return DeviceRuntimeInfo(
+            requested=normalized,
+            selected=selected,
+            torch_version=None,
+            cuda_available=None,
+            cuda_version=None,
+            device_name=None,
+            reason="PyTorch is not installed, so training falls back to CPU semantics.",
+        )
+    return _device_runtime_info_from_torch(requested, torch)
+
+
+def format_device_runtime(info: DeviceRuntimeInfo) -> str:
+    gpu_label = info.device_name or "N/A"
+    return (
+        "[device] "
+        f"requested={info.requested} "
+        f"resolved={info.selected} "
+        f"torch={info.torch_version or 'unavailable'} "
+        f"cuda_available={info.cuda_available} "
+        f"cuda_version={info.cuda_version or 'None'} "
+        f"gpu={gpu_label} "
+        f"reason={info.reason}"
+    )
+
+
 def default_device(train_cfg: dict[str, Any]) -> str:
-    return str(train_cfg.get("device", "auto"))
+    return resolve_device_runtime(train_cfg).selected
 
 
 def interpolate_across_rounds(
@@ -425,13 +570,13 @@ def override_model_hyperparameters(
     so a naive resume would ignore new learning-rate / clip-range / entropy
     settings. This helper replaces them with constants for the next phase.
     """
-    from stable_baselines3.common.utils import get_schedule_fn
+    from stable_baselines3.common.utils import FloatSchedule
 
     model.learning_rate = float(learning_rate)
-    model.lr_schedule = get_schedule_fn(float(learning_rate))
-    model.clip_range = get_schedule_fn(float(clip_range))
+    model.lr_schedule = FloatSchedule(float(learning_rate))
+    model.clip_range = FloatSchedule(float(clip_range))
     if hasattr(model, "clip_range_vf") and model.clip_range_vf is not None:
-        model.clip_range_vf = get_schedule_fn(float(clip_range))
+        model.clip_range_vf = FloatSchedule(float(clip_range))
     model.ent_coef = float(ent_coef)
 
 

@@ -14,9 +14,11 @@ from .common import (
     build_vec_env,
     default_device,
     find_resume_vecnormalize_path,
+    format_device_runtime,
     load_role_configs,
     make_single_agent_env_factory,
     resolve_algorithm_spec,
+    resolve_device_runtime,
     resolve_single_agent_run_dir,
     save_vecnormalize_artifacts,
     wrap_with_vec_normalize,
@@ -63,6 +65,8 @@ def run_single_agent(role: str) -> None:
     if args.resume is not None:
         train_cfg["resume_path"] = args.resume
     env_config, train_cfg = apply_runtime_overrides(env_config, train_cfg, args.overrides_json)
+    device_info = resolve_device_runtime(train_cfg)
+    print(format_device_runtime(device_info))
     algo_spec = resolve_algorithm_spec(train_cfg.get("algorithm", "ppo"))
     if algo_spec.uses_action_masks and str(env_config["action"]["type"]).lower() != "discrete":
         raise RuntimeError("MaskablePPO requires `action.type: discrete` in configs/env.yaml or GUI overrides.")
@@ -163,6 +167,7 @@ def run_single_agent(role: str) -> None:
     if resume_path is not None:
         assert algo_spec.model_cls is not None
         model = algo_spec.model_cls.load(str(resume_path), env=vec_env, device=default_device(train_cfg))
+        model.tensorboard_log = str(tensorboard_dir)
     else:
         assert algo_spec.model_cls is not None
         model = algo_spec.model_cls(
@@ -197,6 +202,7 @@ def run_single_agent(role: str) -> None:
         {
             "mode": f"single_agent_{role}",
             "algorithm": algo_spec.summary_name,
+            "device_info": device_info.to_dict(),
             "run_dir": run_dir,
             "final_model": final_path.with_suffix(".zip"),
             "best_model": best_model_path if best_model_path.exists() else None,
