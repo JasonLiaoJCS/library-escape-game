@@ -47,6 +47,7 @@ def apply_game_mode_overrides(
     world_cfg = env_config.setdefault("world", {})
     enemy_cfg = env_config.setdefault("enemy", {})
     enemy_team_cfg = env_config.setdefault("enemy_team", {})
+    observation_cfg = env_config.setdefault("observation", {})
     ui_cfg = env_config.setdefault("ui", {})
 
     world_cfg["game_mode"] = normalized
@@ -71,10 +72,12 @@ def apply_game_mode_overrides(
         enemy_cfg["detect_penalty_seconds"] = 8.0
         enemy_cfg["detect_pause_seconds"] = 1.20
         enemy_cfg["chase_when_visible"] = False
+        enemy_cfg["max_turn_rate_deg_per_sec"] = 0.0
         enemy_team_cfg["support_count"] = 4
         enemy_team_cfg["support_speed_scale"] = 1.04
         enemy_team_cfg["support_vision_range_scale"] = 1.00
         enemy_team_cfg["support_vision_angle_scale"] = 0.96
+        observation_cfg["partial_observability"] = False
         if interactive:
             ui_cfg["show_detection_meter"] = False
             ui_cfg["show_last_seen_marker"] = False
@@ -94,11 +97,13 @@ def apply_game_mode_overrides(
         enemy_cfg["detect_penalty_seconds"] = 0.0
         enemy_cfg["detect_pause_seconds"] = 0.0
         enemy_cfg["chase_when_visible"] = True
-        enemy_cfg["chase_speed_multiplier"] = 1.02
+        enemy_cfg["chase_speed_multiplier"] = 1.08
+        enemy_cfg["max_turn_rate_deg_per_sec"] = 0.0
         enemy_team_cfg["support_count"] = 1
         enemy_team_cfg["support_speed_scale"] = 0.82
         enemy_team_cfg["support_vision_range_scale"] = 0.80
         enemy_team_cfg["support_vision_angle_scale"] = 0.80
+        observation_cfg["partial_observability"] = False
         if interactive:
             ui_cfg.setdefault("show_exit_label", True)
 

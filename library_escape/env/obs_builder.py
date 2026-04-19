@@ -32,6 +32,9 @@ class ObsBuilder:
         metrics = world.transition_metrics()
         primary_visible = world.primary_enemy_sees_player() if hasattr(world, "primary_enemy_sees_player") else world.player_visible_to_enemy()
         team_visible = world.player_visible_to_enemy()
+        # Escape mode can disable partial observability so the enemy sees the
+        # player's relative position directly. Collection mode keeps the older
+        # stealth-oriented masking behavior.
         rel_x = player.x - enemy.x if (team_visible or not self.partial_observability) else 0.0
         rel_y = player.y - enemy.y if (team_visible or not self.partial_observability) else 0.0
         nearest_ally_dx = 0.0
@@ -42,6 +45,8 @@ class ObsBuilder:
             nearest_ally_dx = (nearest_ally.x - enemy.x) / world.width
             nearest_ally_dy = (nearest_ally.y - enemy.y) / world.height
         collection_flag, escape_flag = self._mode_flags(world)
+        escape_dx, escape_dy = self._relative_escape_offset(world, enemy.position)
+        player_goal_dx, player_goal_dy = self._relative_player_goal_offset(world, enemy.position)
 
         features = [
             enemy.x / world.width,
@@ -73,6 +78,10 @@ class ObsBuilder:
             float(metrics.get("primary_threat_margin", 0.0)),
             collection_flag,
             escape_flag,
+            escape_dx,
+            escape_dy,
+            player_goal_dx,
+            player_goal_dy,
         ]
         features.extend(self._wall_rays(world, enemy.position, self.wall_rays))
         return np.asarray(features, dtype=np.float32)
@@ -81,9 +90,26 @@ class ObsBuilder:
         player = world.player
         metrics = world.transition_metrics()
         nearest_enemy = world.nearest_enemy() if hasattr(world, "nearest_enemy") else world.enemy
+        primary_enemy = world.enemy
+        support_enemies = list(getattr(world, "support_enemies", []))
+        nearest_support = (
+            min(support_enemies, key=lambda enemy: math.hypot(enemy.x - player.x, enemy.y - player.y))
+            if support_enemies
+            else None
+        )
         enemy_visible = self._enemy_visible_to_player(world)
+        # Escape mode can disable partial observability so the player can plan
+        # around enemy positions; collection mode keeps stealth masking.
         rel_x = nearest_enemy.x - player.x if (enemy_visible or not self.partial_observability) else 0.0
         rel_y = nearest_enemy.y - player.y if (enemy_visible or not self.partial_observability) else 0.0
+        primary_rel_x = primary_enemy.x - player.x if (enemy_visible or not self.partial_observability) else 0.0
+        primary_rel_y = primary_enemy.y - player.y if (enemy_visible or not self.partial_observability) else 0.0
+        support_rel_x = 0.0
+        support_rel_y = 0.0
+        if nearest_support is not None and (enemy_visible or not self.partial_observability):
+            support_rel_x = nearest_support.x - player.x
+            support_rel_y = nearest_support.y - player.y
+        escape_dx, escape_dy = self._relative_escape_offset(world, player.position)
         note_dx, note_dy = self._relative_collectible_offset(world, player.position, ("note",))
         exam_dx, exam_dy = self._relative_collectible_offset(world, player.position, ("exam",))
         power_dx, power_dy = self._relative_collectible_offset(world, player.position, ("coffee", "freeze"))
@@ -121,22 +147,43 @@ class ObsBuilder:
             float(metrics.get("team_detection_cooldown", 0.0)),
             collection_flag,
             escape_flag,
+            primary_rel_x / world.width,
+            primary_rel_y / world.height,
+            support_rel_x / world.width,
+            support_rel_y / world.height,
+            escape_dx,
+            escape_dy,
         ]
         features.extend(self._fan_rays(world, player.position, (player.facing_x, player.facing_y), self.player_enemy_rays))
         features.extend(self._wall_rays(world, player.position, self.wall_rays))
         return np.asarray(features, dtype=np.float32)
 
     def enemy_obs_dim(self) -> int:
-        return 29 + self.wall_rays
+        return 33 + self.wall_rays
 
     def player_obs_dim(self) -> int:
-        return 31 + self.player_enemy_rays + self.wall_rays
+        return 37 + self.player_enemy_rays + self.wall_rays
 
     def _relative_collectible_offset(self, world, origin: tuple[float, float], kinds: tuple[str, ...]) -> tuple[float, float]:
         target = world.nearest_collectible(origin, kinds=kinds)
         if target is None:
             return 0.0, 0.0
         return (target.x - origin[0]) / world.width, (target.y - origin[1]) / world.height
+
+    def _relative_escape_offset(self, world, origin: tuple[float, float]) -> tuple[float, float]:
+        escape_center = world.escape_center() if hasattr(world, "escape_center") else (
+            world.escape_zone["x"] + (world.escape_zone["w"] / 2.0),
+            world.escape_zone["y"] + (world.escape_zone["h"] / 2.0),
+        )
+        return (escape_center[0] - origin[0]) / world.width, (escape_center[1] - origin[1]) / world.height
+
+    def _relative_player_goal_offset(self, world, origin: tuple[float, float]) -> tuple[float, float]:
+        if not hasattr(world, "current_player_goal_position"):
+            return 0.0, 0.0
+        goal = world.current_player_goal_position()
+        if goal is None:
+            return 0.0, 0.0
+        return (goal[0] - origin[0]) / world.width, (goal[1] - origin[1]) / world.height
 
     def _normalized_distance(self, world, distance: float) -> float:
         return float(distance / max(1.0, world.max_map_distance()))

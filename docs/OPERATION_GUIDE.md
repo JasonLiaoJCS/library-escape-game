@@ -664,6 +664,7 @@ GUI 主檔：
 - `Resume checkpoint (optional)`
   - 給 `enemy` / `player` 單訓用
   - 直接選舊的 `.zip` checkpoint，新的訓練會從那個 policy 接著練
+  - 但如果那個 checkpoint 是 `11.10` 這輪 observation 改版前的舊模型，**不要直接續訓**；目前 `Collection` / `Escape` 兩個 mode 的 observation 維度都已經更新，建議從零重練或只接續同版本新 checkpoint
 - `Resume self-play run (optional)`
   - 給 `selfplay` 用
   - 直接選舊的 self-play run 資料夾
@@ -1073,6 +1074,12 @@ observation:
   max_ray_distance: 8.0
 ```
 
+重要：
+
+- `configs/env.yaml` 這裡的 `partial_observability: true` 只是 base profile。
+- 真正進入 [`library_escape/game_modes.py`](../library_escape/game_modes.py) 的 `Collection` / `Escape` preset 後，**目前兩個 mode 都會覆蓋成 `false`**。
+- 也就是說，現在實際訓練與播放時，玩家與敵人都會直接拿到相對位置向量；這是這一輪為了打掉「不知道要去哪、原地擺爛」而刻意做的 observation 擴充。
+
 ### 10.2 實際組裝程式碼
 
 在：
@@ -1112,18 +1119,23 @@ observation:
 27. `primary_threat_margin`
 28. `collection_mode_flag`
 29. `escape_mode_flag`
-30. `wall_rays[0]`
-31. `wall_rays[1]`
-32. `wall_rays[2]`
-33. `wall_rays[3]`
-34. `wall_rays[4]`
-35. `wall_rays[5]`
-36. `wall_rays[6]`
-37. `wall_rays[7]`
+30. `relative_escape_x`
+31. `relative_escape_y`
+32. `relative_player_goal_x`
+33. `relative_player_goal_y`
+34. `wall_rays[0]`
+35. `wall_rays[1]`
+36. `wall_rays[2]`
+37. `wall_rays[3]`
+38. `wall_rays[4]`
+39. `wall_rays[5]`
+40. `wall_rays[6]`
+41. `wall_rays[7]`
 
 幾個重要細節：
 
 - 如果 `partial_observability = true` 且敵方隊伍目前沒看到玩家，`relative_player_x / y` 會被寫成 `0.0`
+- 但目前 `Collection` / `Escape` preset 都把 `partial_observability` 覆蓋成 `false`，所以實際上這兩個 mode 會直接暴露相對位置
 - `primary_visible_flag` 是「主敵人自己看沒看到玩家」
 - `team_visible_flag` 是「整個敵方隊伍有沒有任何一人看到玩家」
 - `visible_enemy_ratio` 是「目前看得到玩家的敵人數 / 全敵人數」
@@ -1132,11 +1144,15 @@ observation:
 - `exit_lead` 能讓敵人知道目前自己隊伍相對玩家是不是更接近出口，對守出口與包抄很重要
 - `collection_progress` / `team_detection_cooldown` / `primary_enemy_pause_fraction` 讓敵人知道玩家是不是正在收集，以及剛發生 spotting 後是否還在冷卻
 - `collection_mode_flag / escape_mode_flag` 讓同一個模型結構能跨模式訓練，不需要整個 action/obs pipeline 換掉
+- `relative_escape_x / y` 讓敵人直接知道出口在自己哪個方向，Escape 比較容易長出守出口與切線攔截
+- `relative_player_goal_x / y` 讓敵人直接知道「玩家現在最該去的地方」在哪裡
+  - Escape：通常是最近必收目標；一旦解鎖逃脫就切到出口中心
+  - Collection：是 `current_collection_goal_collectible()` 選出的當前最高價值目標，不再只是死盯固定 required item
 - `wall_rays` 是 360 度等角度打出去的障礙距離，已經除上 `max_ray_distance`
 
 預設 `wall_rays = 8`，所以敵人 observation 維度預設是：
 
-- `29 + 8 = 37`
+- `33 + 8 = 41`
 
 ### 10.4 玩家 observation 目前包含什麼
 
@@ -1173,28 +1189,38 @@ observation:
 29. `team_detection_cooldown`
 30. `collection_mode_flag`
 31. `escape_mode_flag`
-32. `front_fan_ray[0]`
-33. `front_fan_ray[1]`
-34. `front_fan_ray[2]`
-35. `wall_rays[0]`
-36. `wall_rays[1]`
-37. `wall_rays[2]`
-38. `wall_rays[3]`
-39. `wall_rays[4]`
-40. `wall_rays[5]`
-41. `wall_rays[6]`
-42. `wall_rays[7]`
+32. `relative_primary_enemy_x / world.width`
+33. `relative_primary_enemy_y / world.height`
+34. `relative_nearest_support_x / world.width`
+35. `relative_nearest_support_y / world.height`
+36. `relative_escape_x`
+37. `relative_escape_y`
+38. `front_fan_ray[0]`
+39. `front_fan_ray[1]`
+40. `front_fan_ray[2]`
+41. `wall_rays[0]`
+42. `wall_rays[1]`
+43. `wall_rays[2]`
+44. `wall_rays[3]`
+45. `wall_rays[4]`
+46. `wall_rays[5]`
+47. `wall_rays[6]`
+48. `wall_rays[7]`
 
 幾個重要細節：
 
 - `relative_nearest_enemy_x / y` 只看「最近的敵人」，不是所有敵人的平均
 - 如果 `partial_observability = true` 且玩家視角下目前看不到敵人，這兩個相對座標會被寫成 `0.0`
+- 但目前兩個 mode preset 都把 `partial_observability` 覆蓋成 `false`，所以實際上玩家會直接看到最近敵人、主敵人、最近支援敵人的相對方向
 - `nearest_note / nearest_exam / nearest_powerup dx dy` 讓玩家能把主目標、加分道具與增益道具分開看
 - `objective_progress` 與 `score_progress` 分開放，讓 Collection 重點落在壓分 / 拉分，Escape 重點落在完成前置條件後衝出口
 - `collection_progress` 讓玩家知道自己是不是正在收集進度中
 - `exit_lead` 幫助玩家判斷現在是不是比敵人更有機會先到出口
 - `team_detection_cooldown` 幫助玩家知道剛被發現後是否仍在共享偵測冷卻
 - `collection_mode_flag / escape_mode_flag` 讓同一份 observation schema 能在兩種 Game mode 都使用
+- `relative_primary_enemy_x / y` 與 `relative_nearest_support_x / y` 是這一輪新增的策略資訊
+  - 玩家不只知道「最近有人」，也知道 primary 從哪邊壓過來、最近支援敵人在哪邊封路
+- `relative_escape_x / y` 讓玩家不必只靠 `distance_player_to_escape` 猜方向，而能直接規劃衝出口路線
 - `front_fan_ray` 雖然參數名叫 `player_enemy_rays`，但目前實作其實是「玩家面朝方向前方扇形的距離 ray」，不是直接回傳敵人位置
 - `wall_rays` 一樣是已標準化的障礙距離
 
@@ -1205,7 +1231,7 @@ observation:
 
 所以玩家 observation 維度預設是：
 
-- `31 + 3 + 8 = 42`
+- `37 + 3 + 8 = 48`
 
 ### 10.5 你想改 observation 時怎麼做
 
@@ -1653,266 +1679,289 @@ reward = clamp(reward, -clip_range, clip_range)
 
 這不是正式 benchmark，也不是訓練後的最終強度；它只是用來確認兩個模式目前不會一邊完全碾壓另一邊，並且 Escape 會同時出現「被抓到」與「拖到超時」兩種失敗型態，而不是單一崩壞模式。
 
-### 11.10 2026-04-19 reward 大刀闊斧重塑
+### 11.10 2026-04-19 / 2026-04-20 reward / observation / patrol 大改版
 
-這一節記錄 `2026-04-19` 這次對 reward 的大改版，包括：
+這一節記錄 `2026-04-19` 到 `2026-04-20` 連續兩輪大改版。現在實際生效的不只 reward，還包括：
 
-- 為什麼要重塑
-- 診斷出的四個根因
-- 新增的 reward 項目
-- `reward_fns.py` 改了什麼
-- 新的 Collection / Escape 權重
+- `Escape` / `Collection` 兩個 mode 的 observation 擴充
+- 玩家當前目標選擇邏輯
+- 支援敵人的 patrol 壓力邏輯
+- 舊 checkpoint 相容性保護
 
-前面 `11.5` / `11.6` 兩個小節的 YAML 區塊保留作歷史版本參考；目前實際生效的權重請以本節 (`11.10`) 與兩份 config 檔為準。
+前面 `11.5` / `11.6` 兩個小節的 YAML 區塊保留作歷史版本參考；目前實際生效的內容請以本節 (`11.10`) 與程式碼 / config 檔為準。
 
-#### 11.10.1 為什麼要重塑：觀察到的病態行為
+#### 11.10.1 為什麼要重塑：兩個 mode 都出現病態行為
 
-在 `2026-04-19` 之前訓練一整夜的 Escape 模型，實際播放時出現下列典型崩壞：
+在這輪重塑前，`Escape` 與 `Collection` 都會出現非常類似的崩壞：
 
-- 主敵人（`enemy_0`，RL 控制的 primary）幾乎不移動，只在原地瘋狂改變朝向，像是在「原地自旋」。
-- 支援敵人（rule-based A\*）一開始會靠近玩家，但到玩家附近後只會在玩家側邊做上下抽動，沒有真的「看到」玩家。
-- 玩家在遇到敵人時只會左右左右左右地抖動，沒有去拿書、也沒有往逃脫區走。
-- 最後整盤停滯在「雙方互相抖動」的死循環裡。
+- 主敵人只會原地甩頭、自旋，沒有真正追擊。
+- 支援敵人常卡在很小的範圍做固定路徑循環，沒有對玩家目標區施壓。
+- 玩家會左右抖動、原地站住、或只在目標旁邊猶豫，不真的去收集或往出口推進。
+- 雙方 reward 看起來還在跳，但實際行為沒有「想贏」。
 
-Collection 模式同樣會有類似的消極症狀：敵人偏好靠在支援敵人旁邊蹭 team visibility，玩家會一直在目標旁邊猶豫不決。
+`Escape` 的壞相是自旋、拖時間、守不到出口；`Collection` 的壞相是蹭 visibility、壓不到得分路線、玩家不主動拉分。
 
-#### 11.10.2 診斷出的四個根因
+#### 11.10.2 這次 reward engine 真正改了什麼
 
-1. **主敵人會「吃白飯」（freeloading）**
-   - 舊 `_enemy_potential` 的 `capture_pressure` / `team_visibility` / `exit_guard` / `encirclement` 全部是「團隊級」指標，尤其 `capture_pressure` 用的是 `distance_agents`（團隊中最近敵人到玩家的距離）。
-   - 因為支援敵人是 rule-based A\*，已經會主動靠近玩家 → primary 完全不動也能領到這些 potential 的 reward。
-   - 所以主敵人最佳策略會收斂到「站著不動」。
+這一輪不是只調幾個權重，而是把 reward engine 的主訊號換掉：
 
-2. **Potential shaping 的總量壓過 terminal reward**
-   - 舊 Escape enemy potential 權重總和 `3.00 + 1.85 + 2.00 + 3.40 + 2.05 = 12.30`。
-   - 一局 `≈240` macro-step，累積 dense shaping 很容易超過 `±240` 的 terminal reward。
-   - 代表 policy 會學到「盡量把 shaping 拉滿，避免讓局結束」，而不是真的去抓人 / 真的去逃。
+- 保留 `enemy.chase_progress_per_unit` / `enemy.search_move_per_unit`
+- 保留 `player.goal_progress_per_unit` / `player.evade_progress_per_unit`
+- 新增 `enemy.objective_guard_progress_per_unit`
+  - primary 敵人縮短自己到「玩家當前目標」的距離才有 reward
+  - 用來打掉「守自己小圈圈」但完全沒壓到玩家路線的壞策略
+- 新增 `enemy.exit_guard_progress_per_unit`
+  - 只在 `can_player_escape()` 之後生效
+  - 敵人縮短自己到出口區的距離才有 reward，學會切出口而不是繞錯邊
+- `_quiet_step()` 不再因為 `visible_steps > 0` 就免罰
+  - 現在即使看得到玩家，原地不動 / 小範圍來回震盪仍然會吃 anti-stall / anti-oscillation penalty
+- `zero_sum_mix` 現在兩個 mode 都是 `0.0`
+  - 這一輪觀察到只要保留 adversarial mix，還是容易收斂到 mutual-freeze
+- potential shaping 現在兩個 mode 都全部關閉
+  - reward 改成依賴更直接、可解釋的 dense signal，而不是讓多組 potential 彼此打架
 
-3. **反震盪懲罰在最關鍵的時刻被關掉**
-   - 舊的 `_quiet_step()` 只要 `visible_steps > 0` 就直接 `return False`，等於「一旦玩家被看到，oscillation / stationary penalty 都停用」。
-   - 但使用者觀察到的死循環，就是在玩家被看到時兩邊對視抖動 → 等於 exploit 走到哪裡、reward 機制就睜一隻眼閉一隻眼。
+#### 11.10.3 observation 與目標選擇也一起重做
 
-4. **缺少「實際縮短距離」的 dense 正回饋**
-   - `events.primary_distance_delta` 早就有計算，但 reward engine 從來沒用它。
-   - 於是 primary 沒有任何「物理靠近玩家」的直接 shaping；只能靠 potential delta，而 potential delta 已經被第 1 點破壞了。
+這一輪最重要的不是只有 reward，還包含 observation / target-selection：
 
-#### 11.10.3 新增的 reward 項目
+- `Collection` / `Escape` 目前都在 [`library_escape/game_modes.py`](../library_escape/game_modes.py) 內把 `partial_observability` 覆蓋成 `false`
+- 敵人 observation 新增：
+  - `relative_escape_x / y`
+  - `relative_player_goal_x / y`
+- 玩家 observation 新增：
+  - `relative_primary_enemy_x / y`
+  - `relative_nearest_support_x / y`
+  - `relative_escape_x / y`
+- [`library_escape/core/world.py`](../library_escape/core/world.py) 新增 `current_player_goal_position()`
+  - Escape：先指向目前必收目標；解鎖後改指向出口
+  - Collection：改成 `current_collection_goal_collectible()`，會依道具價值 / 距離 / coffee / freeze 情況選出當前最值得搶的目標
+- `distance_player_to_target` 也跟著改成對這個「動態目標」量測，不再只是舊版固定 target
 
-在 [`library_escape/rewards/reward_fns.py`](../library_escape/rewards/reward_fns.py) 增加了四個 reward 項目：
+這些改動的目的很直接：讓 agent 不用再靠模糊的 visibility shaping 猜「現在該去哪」，而是直接學會壓目標、守路線、衝出口。
 
-| YAML key | 對象 | 觸發條件 | 用意 |
-| --- | --- | --- | --- |
-| `enemy.chase_progress_per_unit` | 敵人 | 每一 macro-step，按 `events.primary_distance_delta` 線性給分 | primary 真的縮短與玩家的距離才有 reward，解決第 4 點 |
-| `enemy.search_move_per_unit` | 敵人 | 看不到玩家，但這一步有移動 | 給一點「動起來」的誘因，打破「原地自旋」local optimum |
-| `player.goal_progress_per_unit` | 玩家 | 每一 macro-step，按玩家「到當前目標」的距離差給分 | 目標會自動在「最近必收道具」與「逃脫區」之間切換（依 `can_escape`） |
-| `player.evade_progress_per_unit` | 玩家 | 被 primary 看到且拉開距離 | 給明確的躲避誘因，減少「被盯住還原地抖動」 |
+#### 11.10.4 世界腳本與 baseline 也同步改革
 
-另外在 `enemy.potential` 新增了一個旗標：
+病態行為裡有一部分不是 RL 自己學壞，而是 baseline / support patrol 本來就太死：
 
-| YAML key | 預設 | 作用 |
-| --- | --- | --- |
-| `enemy.potential.use_primary_distance` | `true` | `capture_pressure` 用 `distance_primary_enemy` 取代 `distance_agents`，擋掉 primary 吃支援敵人便車的 freeloading |
+- [`library_escape/core/world.py`](../library_escape/core/world.py) 的 support enemy patrol 現在兩個 mode 都會偏向 `current_player_goal_position()`
+  - Collection：偏向玩家當前得分目標，必要時再往玩家位置補一點壓力
+  - Escape：前期往玩家必收目標壓，後期逐漸往出口線收
+- [`library_escape/agents/rule_based_enemy.py`](../library_escape/agents/rule_based_enemy.py) 的 Collection primary baseline 現在也會朝玩家當前得分目標移動，不再只是守死 waypoint
+- [`library_escape/train/common.py`](../library_escape/train/common.py) 的 history opponent pool 現在會先檢查 `obsnorm` 維度，只混入 observation 維度相容的舊模型，避免訓練中途 shape mismatch 直接炸掉
 
-#### 11.10.4 `reward_fns.py` 的行為改動
+這一輪**沒有**改掉你在意的核心玩法規則：
 
-- `_enemy_potential()` 會依 `use_primary_distance` 決定 `capture_pressure` 用「primary 到玩家」還是「團隊最近敵人到玩家」。預設切到 primary，從根上堵死 freeloading 的 exploit。
-- `_quiet_step()` 拿掉 `visible_steps > 0` 例外。也就是說：即使玩家正被看到，只要符合「小位移 + 高路徑長 / 低淨位移」，還是會照常吃 oscillation / stationary penalty。真正排除的只剩三件事：
-  - 該局以 `caught` / `escaped` / `objective_completed` 結束（terminal 事件不該被誤判成抖動）
-  - 這一步有收到道具 / `collection_progress > 0`（正在收書，站著是合法的）
-  - 該敵人處於 `detection_pause`（遊戲規則強制停住）
-- `_goal_progress_delta()` 會依照 `next_metrics.can_escape` 決定鎖的 key，避免玩家剛好在「解鎖逃脫」那一瞬間因為 key 從 `distance_player_to_target` 切到 `distance_player_to_escape` 而出現巨大跳點。
+- 拿東西規則沒改
+- `Collection` 的長按收集規則沒改
+- `Escape` 的逃脫條件沒改
+- GUI 功能沒改
+- 轉頭限速功能目前仍然維持關閉，沒有偷偷改壞實際物理規則
 
-#### 11.10.5 新的 Escape 權重
+#### 11.10.5 目前實際生效的 Escape 權重
 
 檔案：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
 
 設計原則：
 
-- Terminal dominate：`catch_player` / `escape` 都是 `±300`，`timeout_win` / `timeout_loss` 只剩 `±30`，stalling 明顯比抓到 / 逃到差。
-- Potential 權重總和從 `12.30` 砍到約 `2.1`（enemy）/ `3.0`（player），讓 `Σ potential_delta` 不再壓過 terminal。
-- `support_visible_per_step` 從 `0.08` 降到 `0.02`，`team_visible_ratio_per_step` 同理。Primary 想領可見度 reward，就要自己看到玩家。
-- `idle_penalty` 從 `-0.016` 提高到 `-0.10`（約 `6x`）。站著不動永遠是壞策略。
-- `zero_sum_mix` 從 `0.30` 降到 `0.10`。大幅 zero-sum 在這種不平衡對抗（3 支援敵人 vs 1 玩家）容易收斂到「互相不動」的 minmax 平衡。
+- `catch_player` / `escape` 是絕對主訊號，`±300`
+- `timeout` 與 `stalemate` 明顯比真抓到 / 真逃掉差
+- visibility reward 幾乎只剩「弱確認」，不再是主要訓練目標
+- primary 應該壓玩家目標路線與出口，而不是蹭支援敵人視野
 
 ```yaml
 global:
   gamma: 0.99
   clip_range: 320.0
-  zero_sum_mix: 0.10
+  zero_sum_mix: 0.0
 
 enemy:
   catch_player: 300.0
   lose_on_escape: -300.0
-  timeout_win: 30.0
-  stalemate: -60.0
+  timeout_win: 20.0
+  stalemate: -80.0
   detection_event_bonus: 0.0
-  player_collect_note_penalty: -14.0
-  player_collect_exam_penalty: -4.0
-  player_collect_powerup_penalty: -4.0
-  player_objective_complete_penalty: -60.0
-  primary_visible_per_step: 0.35
-  support_visible_per_step: 0.02
-  team_visible_ratio_per_step: 0.02
-  chase_progress_per_unit: 0.60    # 新增
-  search_move_per_unit: 0.05       # 新增
-  time_penalty: -0.015
-  wall_penalty: -0.20
-  idle_penalty: -0.10
+  player_collect_note_penalty: -15.0
+  player_collect_exam_penalty: -3.0
+  player_collect_powerup_penalty: -3.0
+  player_objective_complete_penalty: -80.0
+  primary_visible_per_step: 0.05
+  support_visible_per_step: 0.0
+  team_visible_ratio_per_step: 0.0
+  chase_progress_per_unit: 1.50
+  objective_guard_progress_per_unit: 0.85
+  exit_guard_progress_per_unit: 0.95
+  search_move_per_unit: 0.25
+  time_penalty: -0.02
+  wall_penalty: -0.15
+  idle_penalty: -0.40
   timeout_score_denial_bonus: 0.0
   stalemate_score_denial_bonus: 0.0
   potential:
-    enabled: true
-    use_primary_distance: true     # 新增：擋 freeloading
-    capture_pressure: 0.80
-    team_visibility: 0.20
-    objective_denial: 0.50
-    exit_guard: 0.50
-    encirclement: 0.10
+    enabled: false
+    use_primary_distance: true
+    capture_pressure: 0.0
+    team_visibility: 0.0
+    objective_denial: 0.0
+    exit_guard: 0.0
+    encirclement: 0.0
 
 player:
   escape: 300.0
   caught: -300.0
   timeout_loss: -30.0
-  stalemate: -60.0
-  collect_note: 28.0
+  stalemate: -80.0
+  collect_note: 35.0
   collect_exam: 8.0
   collect_coffee: 6.0
   collect_freeze: 10.0
-  objective_complete_bonus: 70.0
+  objective_complete_bonus: 80.0
   detection_event_penalty: 0.0
-  primary_seen_per_step: -0.30
-  support_seen_per_step: -0.08
-  multi_seen_penalty_per_step: -0.08
-  goal_progress_per_unit: 0.55     # 新增
-  evade_progress_per_unit: 0.25    # 新增
-  time_penalty: -0.008
-  wall_penalty: -0.20
-  idle_penalty: -0.10
+  primary_seen_per_step: -0.05
+  support_seen_per_step: 0.0
+  multi_seen_penalty_per_step: 0.0
+  goal_progress_per_unit: 1.40
+  evade_progress_per_unit: 0.60
+  time_penalty: -0.01
+  wall_penalty: -0.15
+  idle_penalty: -0.30
   timeout_score_progress_bonus: 0.0
   stalemate_score_progress_bonus: 0.0
   potential:
-    enabled: true
-    objective_progress: 0.80
-    target_navigation: 0.50
-    escape_navigation: 0.90
-    threat_margin: 0.30
-    exit_window: 0.50
+    enabled: false
+    objective_progress: 0.0
+    target_navigation: 0.0
+    escape_navigation: 0.0
+    threat_margin: 0.0
+    exit_window: 0.0
 
 anti_exploit:
-  no_progress_penalty: -0.08
-  stationary_threshold: 0.14
-  oscillation_path_threshold: 0.22
-  oscillation_net_threshold: 0.05
-  player_stationary_penalty: -0.10
-  enemy_stationary_penalty: -0.12
-  player_oscillation_penalty: -0.15
-  enemy_oscillation_penalty: -0.18
+  no_progress_penalty: -0.10
+  stationary_threshold: 0.05
+  oscillation_path_threshold: 0.08
+  oscillation_net_threshold: 0.04
+  player_stationary_penalty: -0.35
+  enemy_stationary_penalty: -0.45
+  player_oscillation_penalty: -0.50
+  enemy_oscillation_penalty: -0.60
 ```
 
-#### 11.10.6 新的 Collection 權重
+#### 11.10.6 目前實際生效的 Collection 權重
 
 檔案：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
 
-設計原則（與 Escape 呼應，但改以 `timeout_score_*_bonus` 作為 terminal-equivalent）：
+設計原則：
 
-- Collection 沒有真正 terminal，所以在 `timeout` / `stalemate` 發放 `±120` / `±90` 當作最終結果信號。
-- 同樣新增 `chase_progress_per_unit` / `search_move_per_unit`（敵人）與 `goal_progress_per_unit` / `evade_progress_per_unit`（玩家）。
-- Potential 權重砍輕、primary `use_primary_distance: true` 同樣啟用。
-- `detection_event_bonus` 從 `10.0` 降到 `6.0`，避免敵人把訓練目標變成「觸發偵測事件本身」。
+- Collection 沒有真正 terminal capture / escape，所以把 `timeout_score_*_bonus` 當成真正的終局訊號
+- 玩家主目標回到「有效拉分」，敵人主目標回到「有效壓分」
+- 敵人 dense reward 比 Escape 更重視 `objective_guard_progress_per_unit`，因為這個 mode 的核心是壓玩家得分路線
 
 ```yaml
 global:
   gamma: 0.99
   clip_range: 320.0
-  zero_sum_mix: 0.10
+  zero_sum_mix: 0.0
 
 enemy:
   catch_player: 0.0
   lose_on_escape: 0.0
   timeout_win: 0.0
-  stalemate: -30.0
-  timeout_score_denial_bonus: 120.0
-  stalemate_score_denial_bonus: 90.0
-  detection_event_bonus: 6.0
-  player_collect_note_penalty: -16.0
-  player_collect_exam_penalty: -28.0
-  player_collect_powerup_penalty: -4.0
-  player_objective_complete_penalty: -40.0
-  primary_visible_per_step: 0.40
-  support_visible_per_step: 0.02
-  team_visible_ratio_per_step: 0.02
-  chase_progress_per_unit: 0.55    # 新增
-  search_move_per_unit: 0.05       # 新增
-  time_penalty: -0.004
-  wall_penalty: -0.20
-  idle_penalty: -0.10
+  stalemate: -80.0
+  timeout_score_denial_bonus: 150.0
+  stalemate_score_denial_bonus: 120.0
+  detection_event_bonus: 10.0
+  player_collect_note_penalty: -18.0
+  player_collect_exam_penalty: -34.0
+  player_collect_powerup_penalty: -5.0
+  player_objective_complete_penalty: -60.0
+  primary_visible_per_step: 0.05
+  support_visible_per_step: 0.0
+  team_visible_ratio_per_step: 0.0
+  chase_progress_per_unit: 0.85
+  objective_guard_progress_per_unit: 1.10
+  exit_guard_progress_per_unit: 0.0
+  search_move_per_unit: 0.22
+  time_penalty: -0.01
+  wall_penalty: -0.15
+  idle_penalty: -0.35
   potential:
-    enabled: true
-    use_primary_distance: true     # 新增
-    capture_pressure: 0.60
-    team_visibility: 0.25
-    objective_denial: 0.80
+    enabled: false
+    use_primary_distance: true
+    capture_pressure: 0.0
+    team_visibility: 0.0
+    objective_denial: 0.0
     exit_guard: 0.0
-    encirclement: 0.15
+    encirclement: 0.0
 
 player:
   escape: 0.0
   caught: 0.0
   timeout_loss: 0.0
-  stalemate: -30.0
-  timeout_score_progress_bonus: 120.0
-  stalemate_score_progress_bonus: 90.0
-  collect_note: 20.0
-  collect_exam: 34.0
-  collect_coffee: 5.0
-  collect_freeze: 6.0
-  objective_complete_bonus: 40.0
-  detection_event_penalty: -8.0
-  primary_seen_per_step: -0.25
-  support_seen_per_step: -0.08
-  multi_seen_penalty_per_step: -0.08
-  goal_progress_per_unit: 0.60     # 新增
-  evade_progress_per_unit: 0.20    # 新增
-  time_penalty: -0.004
-  wall_penalty: -0.20
-  idle_penalty: -0.10
+  stalemate: -80.0
+  timeout_score_progress_bonus: 150.0
+  stalemate_score_progress_bonus: 120.0
+  collect_note: 24.0
+  collect_exam: 42.0
+  collect_coffee: 6.0
+  collect_freeze: 8.0
+  objective_complete_bonus: 55.0
+  detection_event_penalty: -10.0
+  primary_seen_per_step: -0.04
+  support_seen_per_step: 0.0
+  multi_seen_penalty_per_step: 0.0
+  goal_progress_per_unit: 1.30
+  evade_progress_per_unit: 0.30
+  time_penalty: -0.015
+  wall_penalty: -0.15
+  idle_penalty: -0.28
   potential:
-    enabled: true
-    objective_progress: 1.00
-    target_navigation: 0.70
+    enabled: false
+    objective_progress: 0.0
+    target_navigation: 0.0
     escape_navigation: 0.0
-    threat_margin: 0.35
+    threat_margin: 0.0
     exit_window: 0.0
 
 anti_exploit:
-  no_progress_penalty: -0.06
-  stationary_threshold: 0.13
-  oscillation_path_threshold: 0.20
-  oscillation_net_threshold: 0.05
-  player_stationary_penalty: -0.09
-  enemy_stationary_penalty: -0.10
-  player_oscillation_penalty: -0.13
-  enemy_oscillation_penalty: -0.15
+  no_progress_penalty: -0.08
+  stationary_threshold: 0.05
+  oscillation_path_threshold: 0.08
+  oscillation_net_threshold: 0.04
+  player_stationary_penalty: -0.30
+  enemy_stationary_penalty: -0.36
+  player_oscillation_penalty: -0.42
+  enemy_oscillation_penalty: -0.48
 ```
 
-#### 11.10.7 背後的 RL 文獻依據
+#### 11.10.7 背後的 RL / 系統設計依據
 
-這次重塑對齊的做法與 `11.9` 同源，但特別加重以下幾個：
+這次不是只「把 reward 調大」而已，而是對齊幾個更穩的設計原則：
 
-- Ng / Harada / Russell 的 PBRS 理論：potential shaping 只有在 `γ · Φ(next) − Φ(prev)` 的 dense 總量**小於** terminal reward 時，policy-invariance 才能近似成立。把 potential 權重砍到 `1/5` 之後 terminal 才真的 dominate。
-- OpenAI Hide-and-Seek：獎勵要能驅動「物理上靠近、物理上離開」這些身體動作，不是只靠抽象的可見度。新增的 `chase_progress_per_unit` 與 `goal_progress_per_unit` 就是這個方向。
-- DeepMind Capture the Flag：終局事件（抓到、逃到、結算分數）必須壓過 per-step shaping，否則 policy 會收斂到「不想結束」。`timeout_win` 壓到遠小於 `catch_player` 就是為了打掉「拖時間就算贏」的 shortcut。
-- AlphaStar league / MAPPO：在多 agent 混合式 reward 中，`zero_sum_mix` 過高會造成 minmax collapse；保留一點 `0.10` 就夠了。
+- Ng / Harada / Russell 的 PBRS 理論：如果 potential shaping 太多、太重，dense total 會壓過 terminal，policy 反而學成「不要結束局」
+- OpenAI Hide-and-Seek / DeepMind Capture the Flag：獎勵要鼓勵物理上真的靠近目標、切路線、拉開距離，而不是只 farm 抽象 visibility
+- 在這個專案的實測裡，`zero_sum_mix` 即使只留一點，也仍然容易把雙方推回互相拖住的平衡，所以目前直接降到 `0.0`
+- observation 直接補上出口向量、主敵人 / 支援敵人向量、玩家當前目標向量，比繼續堆 visibility shaping 更能讓 policy 長出策略
 
 #### 11.10.8 舊 checkpoint 要重練嗎
 
-一句話：**建議從零重練**。
+一句話：**兩個 mode 都建議從零重練，而且舊 checkpoint 不能直接跟這版混用。**
 
 原因：
 
-- 新 reward 的 landscape 與舊版差很多（potential 重塑、增加四個新 term、`use_primary_distance` 把 `capture_pressure` 的定義改了）。
-- 舊 policy 已經在「站著不動 / 原地抖動」這兩個 local optima 收斂，續訓要走出來很慢；從零開始 + 新 reward + new dense shaping 反而是最快的路徑。
-- 若想續訓，可以先觀察前幾萬步 TensorBoard 上的 `idle_penalty` / `oscillation_penalty` / `chase_progress` 指標，確認不再被困在舊的策略再決定。
+- 這一輪不只 reward 變，observation 維度也變了
+  - enemy obs：`37 -> 41`
+  - player obs：`42 -> 48`
+- 只要是舊 observation revision 的 checkpoint，就不該直接拿來：
+  - 續訓單訓
+  - 當 self-play 對手池
+  - 跟新版 checkpoint 混播做公平比較
+- [`library_escape/train/common.py`](../library_escape/train/common.py) 現在已經會自動跳過 `obsnorm` 維度不相容的舊 history model，避免訓練時 shape mismatch 直接崩掉
+- 但如果你手動從 GUI 或 CLI 指向很舊的 `.zip`，還是建議你自己當成不相容版本，不要硬接
+
+最安全的做法：
+
+- `Escape` 重新訓練
+- `Collection` 重新訓練
+- 舊 run 當歷史對照，不當續訓起點
 
 ---
 
@@ -1980,6 +2029,7 @@ enemy:
   vision_angle_deg: 70.0
   chase_speed_multiplier: 1.14
   reaction_interval_seconds: 0.20
+  max_turn_rate_deg_per_sec: 0.0
 ```
 
 你可以調：
@@ -1987,6 +2037,12 @@ enemy:
 - 視野距離
 - 視野角度
 - 看見玩家時加速倍率
+- `max_turn_rate_deg_per_sec`
+
+目前補充：
+
+- `max_turn_rate_deg_per_sec` 目前 base config 與 `Collection` / `Escape` mode preset 都維持 `0.0`
+- 也就是說，這一輪沒有把「敵人轉頭速度限制」正式納入遊戲規則；相關程式支援還在，但預設關閉，避免偷偷改壞玩法
 
 ### 12.4 enemy_team
 
@@ -2022,6 +2078,12 @@ collectibles:
 ### 12.6 observation
 
 前面第 10 節已經詳細說明。
+
+目前補充：
+
+- base `env.yaml` 還是寫 `partial_observability: true`
+- 但現在 `Collection` / `Escape` mode preset 都會覆蓋成 `false`
+- 如果你之後想回到比較 stealth / partial-observable 的版本，請優先改 [`library_escape/game_modes.py`](../library_escape/game_modes.py)，不要只改 base YAML
 
 ### 12.7 action
 

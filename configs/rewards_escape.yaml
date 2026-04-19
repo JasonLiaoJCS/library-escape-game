@@ -1,122 +1,147 @@
 # Escape-mode reward shaping.
 #
-# Design goals (informed by OpenAI Hide-and-Seek, DeepMind Capture-the-Flag, PBRS):
-#   * Terminal rewards dominate accumulated shaping. Potential weights are small
-#     (sum ~2-3) so the policy optimizes the actual game outcome, not the shaping.
-#   * Primary enemy cannot freeload on rule-based support enemies -- capture_pressure
-#     now uses distance_primary_enemy, not distance_agents.
-#   * Dense progress signals on BOTH sides: primary_distance_delta for the enemy
-#     (chase), and goal-distance delta for the player (navigate to notes / exit).
-#   * Standing still and oscillating-in-place are strictly worse than moving, even
-#     when spotted. Idle and oscillation penalties apply regardless of visibility.
-#   * Stalling (timeout) is NOT a win substitute for the enemy; timeout_win is small
-#     compared to catch_player so the enemy is pushed to actively catch.
+# Redesigned to fix three observed pathologies from the ten-hour run:
+#   1) Primary enemy learned to spin in place farming primary_visible_per_step.
+#      -> per-step visibility bonus is now tiny; the dominant dense signal is
+#      physical chase progress (closing distance to the player).
+#   2) Player learned to stand still because primary_seen_per_step (-0.30) plus
+#      wall-hit penalties punished any movement more than idle did.
+#      -> per-step visibility penalty for the player is tiny; goal progress and
+#      strong idle penalties now dominate.
+#   3) Oscillation anti-exploit never fired (path threshold 0.22 was physically
+#      unreachable in a single macro-step — max path is ~0.14-0.17).
+#      -> thresholds tuned to the real per-step scale; penalties strengthened.
+#
+# Design principle: terminal outcomes (catch / escape / objective_complete) are
+# the dominant payoff. Dense shaping only nudges the policy toward the
+# terminal — no per-step signal should pay more than ~1% of a catch/escape.
 
 global:
   gamma: 0.99
   clip_range: 320.0
-  # Small adversarial mix only -- larger values produced mutual-waiting equilibria
-  # where both agents learn to stall because they fear the opponent's shaping.
-  zero_sum_mix: 0.10
+  # No adversarial mix — it produced mutual-freeze equilibria. Keep rewards
+  # independent and rely on the game rules (capture, escape) to make them
+  # competitive.
+  zero_sum_mix: 0.0
 
 enemy:
   # --- Terminal (dominant) ---
   catch_player: 300.0
   lose_on_escape: -300.0
-  timeout_win: 30.0          # intentionally << catch_player so stalling is worse than catching
-  stalemate: -60.0           # stalemate is worse than timeout: punish mutual freeze hard
+  timeout_win: 20.0          # << catch_player: stalling is strictly worse than catching
+  stalemate: -80.0           # stalemate is worse than timeout: punish mutual freeze hard
 
   # --- Sparse events ---
-  detection_event_bonus: 0.0 # not used in escape mode
-  player_collect_note_penalty: -14.0
-  player_collect_exam_penalty: -4.0
-  player_collect_powerup_penalty: -4.0
-  player_objective_complete_penalty: -60.0
+  detection_event_bonus: 0.0
+  player_collect_note_penalty: -15.0
+  player_collect_exam_penalty: -3.0
+  player_collect_powerup_penalty: -3.0
+  player_objective_complete_penalty: -80.0
 
   # --- Dense shaping (per macro-step) ---
-  # Primary enemy must physically see the player -- make this signal strong and
-  # decouple it from support enemies. support_* weights are tiny so the primary
-  # cannot freeload on teammates' vision.
-  primary_visible_per_step: 0.35
-  support_visible_per_step: 0.02
-  team_visible_ratio_per_step: 0.02
-  # NEW: reward for closing physical distance to the player (the "chase" signal).
-  # Scaled per grid-cell of net distance reduction in the macro-step.
-  chase_progress_per_unit: 0.60
-  # NEW: small positive-for-moving-during-search bonus. Breaks "spin in place"
-  # local optima when the player is out of sight. Kept small so it does not
-  # encourage pointless wandering during chase.
-  search_move_per_unit: 0.05
+  # Visibility bonus is intentionally tiny — it used to dominate and caused
+  # spin-in-place. The real chase signal is `chase_progress_per_unit`.
+  primary_visible_per_step: 0.05
+  support_visible_per_step: 0.0
+  team_visible_ratio_per_step: 0.0
+  # Strong chase signal: +1.5 per grid-cell of net distance closed. Macro-step
+  # max closure ~= enemy_speed * frame_skip * physics_dt * chase_mul
+  #              ~= 3.55 * 4 / 120 * 1.08 = 0.128 cells/step -> ~0.19 reward/step
+  # at full speed, which dominates any visibility-spin reward.
+  chase_progress_per_unit: 1.50
+  # When the player has not unlocked the exit yet, reward the primary enemy for
+  # collapsing the distance to the player's current objective (usually the next
+  # required note). This makes "camp a fixed patrol loop" worse than actively
+  # pressuring the space the player needs to use.
+  objective_guard_progress_per_unit: 0.85
+  # Once the exit is unlocked, reward the enemy for reducing its own distance
+  # to the exit lane so it learns to cut off escapes instead of mindlessly
+  # orbiting the player in the wrong half of the map.
+  exit_guard_progress_per_unit: 0.95
+  # Exploration bonus: reward net movement when the player is out of sight.
+  # Prevents the "patrol in a tiny loop" local optimum.
+  search_move_per_unit: 0.25
 
   # --- Soft penalties ---
-  time_penalty: -0.015       # active time pressure
-  wall_penalty: -0.20
-  idle_penalty: -0.10        # ~6x prior value: no-movement is firmly suboptimal
+  time_penalty: -0.02
+  wall_penalty: -0.15
+  idle_penalty: -0.40        # dominant punishment for not moving at all
 
-  # --- Timeout / stalemate score-denial bonuses (unused in escape; keep 0) ---
   timeout_score_denial_bonus: 0.0
   stalemate_score_denial_bonus: 0.0
 
-  # --- Potential-based shaping (small weights -- sum ~2.1) ---
+  # --- Potential-based shaping: OFF ---
+  # Potential shaping on top of the explicit distance/visibility signals was
+  # triple-counting and created competing optima. The explicit dense signals
+  # above are sufficient and interpretable.
   potential:
-    enabled: true
-    use_primary_distance: true  # key fix: no freeloading on supports
-    capture_pressure: 0.80
-    team_visibility: 0.20
-    objective_denial: 0.50
-    exit_guard: 0.50
-    encirclement: 0.10
+    enabled: false
+    use_primary_distance: true
+    capture_pressure: 0.0
+    team_visibility: 0.0
+    objective_denial: 0.0
+    exit_guard: 0.0
+    encirclement: 0.0
 
 player:
   # --- Terminal ---
   escape: 300.0
   caught: -300.0
   timeout_loss: -30.0
-  stalemate: -60.0
+  stalemate: -80.0
 
   # --- Sparse events ---
-  collect_note: 28.0
+  collect_note: 35.0
   collect_exam: 8.0
   collect_coffee: 6.0
   collect_freeze: 10.0
-  objective_complete_bonus: 70.0
+  objective_complete_bonus: 80.0
   detection_event_penalty: 0.0
 
   # --- Dense shaping ---
-  primary_seen_per_step: -0.30
-  support_seen_per_step: -0.08
-  multi_seen_penalty_per_step: -0.08
-  # NEW: reward for shrinking distance to the currently-relevant goal
-  # (nearest required collectible, or escape zone once escape is unlocked).
-  goal_progress_per_unit: 0.55
-  # NEW: when the primary can see the player, reward increasing distance (evasion).
-  evade_progress_per_unit: 0.25
+  # Being seen is bad but not paralysing — was -0.30, produced "freeze in
+  # shadow" behaviour. The real danger is being caught; let the policy learn
+  # that from the catch penalty, not from a per-step fear signal.
+  primary_seen_per_step: -0.05
+  support_seen_per_step: 0.0
+  multi_seen_penalty_per_step: 0.0
+  # Strong pull toward the current goal (nearest required note, or escape zone
+  # once all notes are collected). Tuned so one full-speed macro-step toward
+  # the goal is worth ~0.17, dominating the tiny visibility penalty.
+  goal_progress_per_unit: 1.40
+  # Evade: reward increasing distance from the primary enemy when spotted.
+  evade_progress_per_unit: 0.60
 
   # --- Soft penalties ---
-  time_penalty: -0.008
-  wall_penalty: -0.20
-  idle_penalty: -0.10
+  time_penalty: -0.01
+  wall_penalty: -0.15
+  idle_penalty: -0.30
 
   timeout_score_progress_bonus: 0.0
   stalemate_score_progress_bonus: 0.0
 
-  # --- Potential-based shaping (sum ~2.4) ---
+  # --- Potential-based shaping: OFF (same rationale as enemy) ---
   potential:
-    enabled: true
-    objective_progress: 0.80
-    target_navigation: 0.50
-    escape_navigation: 0.90
-    threat_margin: 0.30
-    exit_window: 0.50
+    enabled: false
+    objective_progress: 0.0
+    target_navigation: 0.0
+    escape_navigation: 0.0
+    threat_margin: 0.0
+    exit_window: 0.0
 
 anti_exploit:
-  no_progress_penalty: -0.08
-  # Stationary / oscillation gates -- anti-exploit now fires even when visible,
-  # because the "visible-oscillation death spiral" was the dominant failure mode.
-  stationary_threshold: 0.14
-  oscillation_path_threshold: 0.22
-  oscillation_net_threshold: 0.05
-  player_stationary_penalty: -0.10
-  enemy_stationary_penalty: -0.12
-  player_oscillation_penalty: -0.15
-  enemy_oscillation_penalty: -0.18
+  no_progress_penalty: -0.10
+  # Thresholds tuned to the real macro-step scale.
+  # - A full-speed macro-step covers ~0.13-0.17 cells of path.
+  # - stationary_threshold 0.05: below this, the agent essentially didn't move.
+  # - oscillation_path_threshold 0.08 / oscillation_net_threshold 0.04:
+  #   "travelled at least 0.08 cells of path but ended up within 0.04 of the
+  #   start" catches back-and-forth jitter that previous thresholds missed.
+  stationary_threshold: 0.05
+  oscillation_path_threshold: 0.08
+  oscillation_net_threshold: 0.04
+  # Penalties strengthened: previously they were dwarfed by visibility rewards.
+  player_stationary_penalty: -0.35
+  enemy_stationary_penalty: -0.45
+  player_oscillation_penalty: -0.50
+  enemy_oscillation_penalty: -0.60

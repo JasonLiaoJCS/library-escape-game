@@ -392,6 +392,7 @@ def test_game_mode_defaults_reflect_latest_balance_tuning():
     assert collection_world.support_enemy_count == 4
     assert collection_world.player.base_speed == 4.0
     assert collection_world.startup_grace_seconds == 1.0
+    assert collection_world.enemy_max_turn_rate_deg == 0.0
 
     escape_env = build_play_env_config(game_mode="escape", manual_collect_required=False)
     escape_world = World(env_config=escape_env, seed=0)
@@ -399,6 +400,59 @@ def test_game_mode_defaults_reflect_latest_balance_tuning():
     assert escape_world.enemy.vision.range_cells == 5.3
     assert escape_world.player.base_speed == 4.55
     assert escape_world.startup_grace_seconds == 0.75
+    assert escape_world.enemy_max_turn_rate_deg == 0.0
+
+
+def test_escape_support_enemy_patrol_leaves_small_local_loop_to_pressure_objective():
+    env_config = build_play_env_config(game_mode="escape", manual_collect_required=False)
+    world = World(env_config=env_config, seed=0)
+    support_enemy = world.support_enemies[0]
+    start_position = support_enemy.position
+
+    for collectible in world.collectibles:
+        collectible.active = False
+    target_note = next(item for item in world.collectibles if item.kind == "note")
+    target_note.active = True
+    target_note.x = 2.5
+    target_note.y = 5.5
+
+    world.player.x = 30.5
+    world.player.y = 16.5
+    world.enemy.x = 5.5
+    world.enemy.y = 5.5
+    world.startup_grace_timer = 0.0
+
+    for _ in range(220):
+        world.step(player_action=(0.0, 0.0), enemy_action=(0.0, 0.0), frame_skip=1, player_collect=False)
+        if support_enemy.x < 14.5 or support_enemy.y < 10.5:
+            break
+
+    assert support_enemy.x < start_position[0] - 1.0 or support_enemy.y < start_position[1] - 1.0
+
+
+def test_collection_support_enemy_patrol_leaves_small_local_loop_to_pressure_collectibles():
+    env_config = build_play_env_config(game_mode="collection", manual_collect_required=True)
+    world = World(env_config=env_config, seed=0)
+    support_enemy = world.support_enemies[0]
+    start_position = support_enemy.position
+
+    for collectible in world.collectibles:
+        collectible.active = False
+    target_exam = next(item for item in world.collectibles if item.kind == "exam")
+    target_exam.active = True
+    target_exam.x = 3.5
+    target_exam.y = 5.5
+
+    world.player.x = 30.5
+    world.player.y = 16.5
+    world.startup_grace_timer = 0.0
+
+    for _ in range(220):
+        world.step(player_action=(0.0, 0.0), enemy_action=(0.0, 0.0), frame_skip=1, player_collect=False)
+        if support_enemy.x < 14.5 or support_enemy.y < 11.5:
+            break
+
+    assert support_enemy.x < start_position[0] - 0.8 or support_enemy.y < start_position[1] - 0.8
 
 
 def test_startup_grace_prevents_immediate_opening_detection():

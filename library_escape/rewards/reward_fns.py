@@ -55,6 +55,12 @@ class RewardEngine:
         # Dense chase signal: reward primary enemy for physically closing the gap to the player.
         # Uses primary_distance_delta (positive when enemy closed the distance this macro-step).
         enemy_reward += float(events.primary_distance_delta) * float(enemy_cfg.get("chase_progress_per_unit", 0.0))
+        if float(next_metrics.get("can_escape", 0.0)) > 0.5:
+            exit_guard_delta = float(prev_metrics.get("distance_enemy_to_escape", 0.0)) - float(next_metrics.get("distance_enemy_to_escape", 0.0))
+            enemy_reward += exit_guard_delta * float(enemy_cfg.get("exit_guard_progress_per_unit", 0.0))
+        else:
+            goal_guard_delta = float(prev_metrics.get("distance_primary_to_player_goal", 0.0)) - float(next_metrics.get("distance_primary_to_player_goal", 0.0))
+            enemy_reward += goal_guard_delta * float(enemy_cfg.get("objective_guard_progress_per_unit", 0.0))
         # Search-mode shaping: when the player is not visible but the enemy is not idle,
         # small positive-for-moving bonus to break "spin in place" local optima.
         if float(events.primary_visible_steps) <= 0.0 and float(events.primary_enemy_net_displacement) > 0.0:
@@ -68,6 +74,9 @@ class RewardEngine:
             and world.enemy_pause_fraction(world.enemy) <= 1e-6
             and not self._enemy_guarding_exit(world, next_metrics)
         ):
+            # Visible-or-not, a non-guarding enemy that does not move is still
+            # stalling. This keeps "spot the player then camp in place" from
+            # becoming the next exploit after spin-in-place.
             enemy_reward += float(enemy_cfg.get("idle_penalty", 0.0))
         if events.player_caught:
             enemy_reward += float(enemy_cfg.get("catch_player", 0.0))
@@ -317,9 +326,8 @@ class RewardEngine:
         return float(anti_exploit_cfg.get(f"{role}_oscillation_penalty", 0.0))
 
     def _quiet_step(self, *, role: str, world, events, next_metrics: dict[str, Any]) -> bool:
-        # Note: we deliberately do NOT exempt visible_steps anymore. The worst pathology
-        # observed was player/enemy oscillating while the player is in line of sight —
-        # exempting visible_steps makes this invisible to the anti-exploit filter.
+        # Visible oscillation/stalling was one of the main escape-mode failures,
+        # so visibility does not exempt either role from anti-exploit checks.
         if events.player_caught or events.player_escaped or events.objective_completed:
             return False
         if sum(events.collected.values()) > 0:

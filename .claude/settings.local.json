@@ -5,7 +5,15 @@
       "Bash(.venv/Scripts/python -c \"import yaml; [print\\(p, '->', type\\(yaml.safe_load\\(open\\(p, encoding='utf-8'\\)\\)\\).__name__\\) for p in ['configs/rewards.yaml','configs/rewards_escape.yaml','configs/rewards_collection.yaml']]\")",
       "Bash(.venv/Scripts/python -c \"from library_escape.rewards.reward_fns import RewardEngine; from library_escape.config import load_env_config, load_rewards_config; env = load_env_config\\(\\); rc = load_rewards_config\\(env['reward_path']\\); print\\('ok:', list\\(rc.keys\\(\\)\\)\\); eng = RewardEngine\\(rc\\); print\\('engine ok'\\)\")",
       "Bash(.venv/Scripts/python -c ' *)",
-      "Bash(.venv/Scripts/python -m pytest tests/ -x -q)"
+      "Bash(.venv/Scripts/python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest tests/test_rewards.py tests/test_world_rules.py tests/test_env_api.py tests/test_physics.py tests/test_action_masks.py tests/test_cone.py -x --tb=short)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\); print\\(sys.path\\)\")",
+      "Bash(where python *)",
+      "Bash(py -3.11 -m pytest --version)",
+      "Bash(py -0)",
+      "Bash(py -3.12 -m pytest tests/test_rewards.py tests/test_world_rules.py tests/test_env_api.py tests/test_physics.py tests/test_action_masks.py tests/test_cone.py -x --tb=short)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest tests/test_rewards.py tests/test_world_rules.py tests/test_env_api.py tests/test_physics.py tests/test_action_masks.py tests/test_cone.py -x --tb=short)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest --tb=short -q --no-header)"
     ]
   }
 }

@@ -220,7 +220,10 @@ def _build_history_pool(role: str, env_config: dict[str, Any], max_items: int, s
     pool = OpponentPool(max_size=max_items, seed=seed)
     for model_path in model_paths:
         observed_dim = _obs_norm_dim_hint(model_path)
-        if observed_dim is not None and observed_dim != expected_obs_dim:
+        # Observation-space revisions should not silently mix with old checkpoints.
+        # If we cannot prove dimensional compatibility from saved normalization
+        # stats, skip the model instead of letting training crash mid-rollout.
+        if observed_dim is None or observed_dim != expected_obs_dim:
             continue
         pool.add(
             _cached_factory(

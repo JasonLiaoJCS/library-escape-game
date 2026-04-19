@@ -44,6 +44,8 @@ def test_detection_and_collection_rewards_align_with_team_gameplay():
         primary_visible_steps=world.rl_frame_skip,
         support_visible_steps=world.rl_frame_skip,
         visible_enemy_count=2 * world.rl_frame_skip,
+        primary_distance_delta=0.25,
+        primary_enemy_net_displacement=0.12,
         progress_made=True,
     )
     visibility_rewards = reward_engine.compute(world, visibility_events, prev_metrics=prev_metrics, next_metrics=prev_metrics)
@@ -131,6 +133,155 @@ def test_antistall_penalties_hit_stationary_and_oscillating_agents():
     assert stationary_rewards["enemy_0"] < 0.0
     assert oscillating_rewards["player_0"] < stationary_rewards["player_0"]
     assert oscillating_rewards["enemy_0"] < stationary_rewards["enemy_0"]
+
+
+def test_visible_stationary_enemy_is_still_penalized_in_escape_mode():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    metrics = world.transition_metrics()
+
+    visible_stationary_events = StepEvents(
+        primary_visible_steps=world.rl_frame_skip,
+        visible_enemy_count=world.rl_frame_skip,
+        progress_made=True,
+        player_net_displacement=0.0,
+        primary_enemy_net_displacement=0.0,
+        player_path_length=0.0,
+        primary_enemy_path_length=0.0,
+    )
+    rewards = reward_engine.compute(world, visible_stationary_events, prev_metrics=metrics, next_metrics=metrics)
+
+    assert rewards["enemy_0"] < 0.0
+
+
+def test_enemy_reward_favors_pressuring_player_objective_before_exit_unlock():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    prev_metrics = world.transition_metrics()
+    next_metrics = dict(prev_metrics)
+    next_metrics["distance_primary_to_player_goal"] = max(0.0, float(prev_metrics["distance_primary_to_player_goal"]) - 0.6)
+
+    rewards = reward_engine.compute(
+        world,
+        StepEvents(progress_made=True, primary_enemy_net_displacement=0.12),
+        prev_metrics=prev_metrics,
+        next_metrics=next_metrics,
+    )
+
+    assert rewards["enemy_0"] > 0.0
+
+
+def test_enemy_reward_favors_guarding_exit_after_unlock():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    prev_metrics = dict(world.transition_metrics())
+    prev_metrics["can_escape"] = 1.0
+    next_metrics = dict(prev_metrics)
+    next_metrics["distance_enemy_to_escape"] = max(0.0, float(prev_metrics["distance_enemy_to_escape"]) - 0.5)
+
+    rewards = reward_engine.compute(
+        world,
+        StepEvents(progress_made=True, primary_enemy_net_displacement=0.12),
+        prev_metrics=prev_metrics,
+        next_metrics=next_metrics,
+    )
+
+    assert rewards["enemy_0"] > 0.0
+
+
+def test_both_modes_expose_positions_after_observation_rework():
+    collection_env = build_game_mode_env_config(game_mode="collection", manual_collect_required=False, interactive=False)
+    collection_world = World(env_config=collection_env, seed=0)
+    collection_world.player.x = 1.5
+    collection_world.player.y = 1.5
+    collection_world.enemy.x = 15.5
+    collection_world.enemy.y = 15.5
+    collection_builder = ObsBuilder(collection_env)
+
+    escape_env = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    escape_world = World(env_config=escape_env, seed=0)
+    escape_world.player.x = 1.5
+    escape_world.player.y = 1.5
+    escape_world.enemy.x = 15.5
+    escape_world.enemy.y = 15.5
+    escape_builder = ObsBuilder(escape_env)
+
+    collection_enemy_obs = collection_builder.build(collection_world, "enemy")
+    collection_player_obs = collection_builder.build(collection_world, "player")
+    escape_enemy_obs = escape_builder.build(escape_world, "enemy")
+    escape_player_obs = escape_builder.build(escape_world, "player")
+
+    assert collection_builder.partial_observability is False
+    assert escape_builder.partial_observability is False
+    assert collection_enemy_obs[4] != 0.0 or collection_enemy_obs[5] != 0.0
+    assert collection_player_obs[4] != 0.0 or collection_player_obs[5] != 0.0
+    assert escape_enemy_obs[4] != 0.0 or escape_enemy_obs[5] != 0.0
+    assert escape_player_obs[4] != 0.0 or escape_player_obs[5] != 0.0
+    assert escape_enemy_obs[29] != 0.0 or escape_enemy_obs[30] != 0.0
+    assert escape_player_obs[35] != 0.0 or escape_player_obs[36] != 0.0
+
+
+def test_escape_player_obs_exposes_primary_support_and_exit_vectors():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    builder = ObsBuilder(env_config)
+    world.player.x = 10.5
+    world.player.y = 10.5
+    world.enemy.x = 6.5
+    world.enemy.y = 6.5
+    world.support_enemies[0].x = 20.5
+    world.support_enemies[0].y = 14.5
+
+    obs = builder.build(world, "player")
+
+    assert obs[31] != 0.0 or obs[32] != 0.0
+    assert obs[33] != 0.0 or obs[34] != 0.0
+    assert obs[35] != 0.0 or obs[36] != 0.0
+
+
+def test_collection_enemy_reward_favors_pressuring_scoring_target():
+    env_config = build_game_mode_env_config(game_mode="collection", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    prev_metrics = world.transition_metrics()
+    next_metrics = dict(prev_metrics)
+    next_metrics["distance_primary_to_player_goal"] = max(0.0, float(prev_metrics["distance_primary_to_player_goal"]) - 0.55)
+
+    rewards = reward_engine.compute(
+        world,
+        StepEvents(progress_made=True, primary_enemy_net_displacement=0.12),
+        prev_metrics=prev_metrics,
+        next_metrics=next_metrics,
+    )
+
+    assert rewards["enemy_0"] > 0.0
+
+
+def test_collection_visible_stationary_enemy_is_penalized():
+    env_config = build_game_mode_env_config(game_mode="collection", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    metrics = world.transition_metrics()
+
+    rewards = reward_engine.compute(
+        world,
+        StepEvents(
+            primary_visible_steps=world.rl_frame_skip,
+            visible_enemy_count=world.rl_frame_skip,
+            progress_made=True,
+            player_net_displacement=0.0,
+            primary_enemy_net_displacement=0.0,
+            player_path_length=0.0,
+            primary_enemy_path_length=0.0,
+        ),
+        prev_metrics=metrics,
+        next_metrics=metrics,
+    )
+
+    assert rewards["enemy_0"] < 0.0
 
 
 def test_obs_builder_exposes_mode_flags_and_expanded_dimensions():

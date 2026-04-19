@@ -43,6 +43,10 @@ class RuleBasedEnemyController:
 
         waypoint = world.enemy_waypoints[enemy.patrol_index]
         target = (waypoint[0] + 0.5, waypoint[1] + 0.5)
+        if hasattr(world, "is_collection_mode") and world.is_collection_mode():
+            player_goal = world.current_player_goal_position() if hasattr(world, "current_player_goal_position") else None
+            if player_goal is not None and hasattr(world, "steer_towards_position"):
+                target = player_goal
         dx = target[0] - enemy.x
         dy = target[1] - enemy.y
         reached_waypoint = (
@@ -54,6 +58,10 @@ class RuleBasedEnemyController:
             enemy.patrol_index = (enemy.patrol_index + 1) % len(world.enemy_waypoints)
             waypoint = world.enemy_waypoints[enemy.patrol_index]
             target = (waypoint[0] + 0.5, waypoint[1] + 0.5)
+            if hasattr(world, "is_collection_mode") and world.is_collection_mode():
+                player_goal = world.current_player_goal_position() if hasattr(world, "current_player_goal_position") else None
+                if player_goal is not None and hasattr(world, "steer_towards_position"):
+                    target = player_goal
             dx = target[0] - enemy.x
             dy = target[1] - enemy.y
         if hasattr(world, "steer_towards_position"):

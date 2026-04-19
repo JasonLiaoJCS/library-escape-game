@@ -74,6 +74,7 @@ class World:
         self.enemy_detect_penalty_seconds = float(enemy_cfg.get("detect_penalty_seconds", 0.0))
         self.enemy_detect_pause_seconds = float(enemy_cfg.get("detect_pause_seconds", 0.0))
         self.enemy_chase_when_visible = bool(enemy_cfg.get("chase_when_visible", True))
+        self.enemy_max_turn_rate_deg = float(enemy_cfg.get("max_turn_rate_deg_per_sec", 0.0))
         self.support_enemy_count = int(enemy_team_cfg.get("support_count", 0))
         self.support_speed_scale = float(enemy_team_cfg.get("support_speed_scale", 1.0))
         self.support_vision_range_scale = float(enemy_team_cfg.get("support_vision_range_scale", 1.0))
@@ -315,14 +316,60 @@ class World:
         closest_y = min(max(py, zone["y"]), zone["y"] + zone["h"])
         return math.hypot(px - closest_x, py - closest_y)
 
+    def escape_center(self) -> tuple[float, float]:
+        zone = self.escape_zone
+        return zone["x"] + (zone["w"] / 2.0), zone["y"] + (zone["h"] / 2.0)
+
     def nearest_required_collectible(self) -> Collectible | None:
         return self.nearest_collectible(self.player.position, kinds=self.required_kinds())
 
-    def distance_player_to_target(self) -> float:
-        target = self.nearest_required_collectible()
+    def current_collection_goal_collectible(self) -> Collectible | None:
+        if not self.is_collection_mode():
+            return None
+        if self.collection_target_index is not None:
+            if 0 <= self.collection_target_index < len(self.collectibles):
+                collectible = self.collectibles[self.collection_target_index]
+                if collectible.active:
+                    return collectible
+
+        candidates = self.active_collectibles()
+        if not candidates:
+            return None
+
+        base_values = {
+            "note": 1.00,
+            "exam": 1.55,
+            "coffee": 0.42,
+            "freeze": 0.50,
+        }
+        visible_pressure = 1.0 if self.player_visible_to_enemy() else 0.0
+        coffee_bias = 0.14 if self.player.coffee_timer <= 1e-6 else -0.10
+        freeze_bias = 0.16 if visible_pressure > 0.0 else 0.02
+
+        def score(item: Collectible) -> float:
+            distance = max(0.35, item.distance_to(self.player.position))
+            value = float(base_values.get(item.kind, 0.25))
+            if item.kind == "coffee":
+                value += coffee_bias
+            elif item.kind == "freeze":
+                value += freeze_bias
+            return value / distance
+
+        return max(candidates, key=score)
+
+    def current_player_goal_position(self) -> tuple[float, float] | None:
+        if self.can_player_escape():
+            return self.escape_center()
+        target = self.current_collection_goal_collectible() if self.is_collection_mode() else self.nearest_required_collectible()
         if target is None:
+            return None
+        return target.x, target.y
+
+    def distance_player_to_target(self) -> float:
+        goal_position = self.current_player_goal_position()
+        if goal_position is None:
             return 0.0
-        return target.distance_to(self.player.position)
+        return self._distance_between_positions(self.player.position, goal_position)
 
     def distance_player_to_collectible_kind(self, kinds: tuple[str, ...]) -> float:
         target = self.nearest_collectible(self.player.position, kinds=kinds)
@@ -394,11 +441,18 @@ class World:
         distance_primary = self.primary_enemy_distance()
         distance_player_to_escape = self.distance_player_to_escape()
         distance_enemy_to_escape = self.nearest_enemy_distance_to_escape()
+        player_goal_position = self.current_player_goal_position()
+        distance_primary_to_player_goal = (
+            self._distance_between_positions(self.enemy.position, player_goal_position)
+            if player_goal_position is not None
+            else 0.0
+        )
         exit_lead = (distance_enemy_to_escape - distance_player_to_escape) / max_distance
         exit_lead = max(-1.0, min(1.0, exit_lead))
         return {
             "distance_agents": distance_agents,
             "distance_primary_enemy": distance_primary,
+            "distance_primary_to_player_goal": distance_primary_to_player_goal,
             "distance_player_to_target": self.distance_player_to_target(),
             "distance_player_to_note": self.distance_player_to_collectible_kind(("note",)),
             "distance_player_to_exam": self.distance_player_to_collectible_kind(("exam",)),
@@ -511,17 +565,28 @@ class World:
             player_speed_scale = 1.0
 
         self.player.apply_action(player_action, speed_scale=player_speed_scale)
+        enemy_turn_rate = self.enemy_max_turn_rate_deg if self.enemy_max_turn_rate_deg > 0.0 else None
         if self._should_pause_enemy(self.enemy, pause_for_detection=(classic_detector_before_move is self.enemy)):
             self.enemy.apply_action((0.0, 0.0))
         else:
-            self.enemy.apply_action(enemy_action, speed_scale=self._enemy_speed_scale(self.enemy, team_visible_before_move))
+            self.enemy.apply_action(
+                enemy_action,
+                speed_scale=self._enemy_speed_scale(self.enemy, team_visible_before_move),
+                dt=dt,
+                max_turn_rate_deg=enemy_turn_rate,
+            )
         for support_enemy in self.support_enemies:
             visible_before = self._enemy_sees_player(support_enemy)
             if self._should_pause_enemy(support_enemy, pause_for_detection=(classic_detector_before_move is support_enemy)):
                 support_enemy.apply_action((0.0, 0.0))
             else:
                 support_action = self._support_enemy_action(support_enemy)
-                support_enemy.apply_action(support_action, speed_scale=self._enemy_speed_scale(support_enemy, visible_before or support_enemy.last_seen_player is not None))
+                support_enemy.apply_action(
+                    support_action,
+                    speed_scale=self._enemy_speed_scale(support_enemy, visible_before or support_enemy.last_seen_player is not None),
+                    dt=dt,
+                    max_turn_rate_deg=enemy_turn_rate,
+                )
 
         self.player.x, self.player.y, player_collided = move_circle(
             x=self.player.x,
@@ -688,10 +753,12 @@ class World:
         if not route:
             return 0.0, 0.0
         waypoint = route[enemy.patrol_index % len(route)]
-        if self.navigation_goal_reached(enemy.position, waypoint, threshold=0.30):
+        patrol_target = self._support_enemy_patrol_target(enemy, waypoint)
+        if self.navigation_goal_reached(enemy.position, patrol_target, threshold=0.35):
             enemy.patrol_index = (enemy.patrol_index + 1) % len(route)
             waypoint = route[enemy.patrol_index]
-        return self.steer_towards_position(enemy.position, waypoint)
+            patrol_target = self._support_enemy_patrol_target(enemy, waypoint)
+        return self.steer_towards_position(enemy.position, patrol_target)
 
     def _support_enemy_intercept_target(self, enemy: EnemyState) -> tuple[float, float]:
         slot_index = max(0, [ally.name for ally in self.support_enemies].index(enemy.name) if enemy in self.support_enemies else 0)
@@ -721,10 +788,39 @@ class World:
             return self._exit_guard_position()
         return self._clamp_free_target(target)
 
+    def _support_enemy_patrol_target(self, enemy: EnemyState, waypoint: tuple[float, float]) -> tuple[float, float]:
+        if not (self.is_escape_mode() or self.is_collection_mode()):
+            return waypoint
+
+        goal_position = self.current_player_goal_position()
+        if goal_position is None:
+            return waypoint
+
+        if self.is_collection_mode():
+            score_progress = self.score_progress_fraction()
+            objective_bias = 0.34 + (0.12 * score_progress)
+            patrol_target = self._midpoint_target(waypoint, goal_position, ratio=objective_bias)
+            if self.player_visible_to_enemy():
+                patrol_target = self._midpoint_target(patrol_target, self.player.position, ratio=0.18)
+            return patrol_target
+
+        # Escape-mode support enemies should not be trapped in tiny local patrol loops.
+        # We keep the original waypoint skeleton, but bias each waypoint toward the
+        # player's live objective so support pressure sweeps toward notes early and
+        # toward the exit lane later.
+        if self.can_player_escape():
+            return self._midpoint_target(waypoint, self._exit_guard_position(), ratio=0.78)
+
+        progress = self.objective_progress_fraction()
+        objective_bias = 0.48 + (0.18 * progress)
+        patrol_target = self._midpoint_target(waypoint, goal_position, ratio=objective_bias)
+        if progress >= 0.45:
+            exit_bias = min(0.32, 0.10 + (0.22 * progress))
+            patrol_target = self._midpoint_target(patrol_target, self._exit_guard_position(), ratio=exit_bias)
+        return patrol_target
+
     def _exit_guard_position(self) -> tuple[float, float]:
-        zone = self.escape_zone
-        center = (zone["x"] + (zone["w"] / 2.0), zone["y"] + (zone["h"] / 2.0))
-        return self._clamp_free_target(center)
+        return self._clamp_free_target(self.escape_center())
 
     def _midpoint_target(self, a: tuple[float, float], b: tuple[float, float], ratio: float = 0.5) -> tuple[float, float]:
         return self._clamp_free_target((a[0] * (1.0 - ratio) + b[0] * ratio, a[1] * (1.0 - ratio) + b[1] * ratio))
