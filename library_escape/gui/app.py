@@ -50,6 +50,7 @@ APP_PALETTE = {
 }
 PREFERRED_UI_FONTS = ("Segoe UI Variable Text", "Segoe UI", "Arial")
 PREFERRED_MONO_FONTS = ("Cascadia Mono", "Consolas", "Courier New")
+LOG_POLL_INTERVAL_MS = 100
 
 
 def enable_windows_high_dpi() -> None:
@@ -79,6 +80,20 @@ def _pick_font(preferred: tuple[str, ...], available: set[str]) -> str:
         if family in available:
             return family
     return preferred[-1]
+
+
+def drain_log_queue(log_queue: queue.Queue[str], widget: tk.Text) -> int:
+    lines: list[str] = []
+    while True:
+        try:
+            lines.append(log_queue.get_nowait())
+        except queue.Empty:
+            break
+    if not lines:
+        return 0
+    widget.insert(tk.END, "".join(lines))
+    widget.see(tk.END)
+    return len(lines)
 
 
 def read_json(path: Path) -> dict:
@@ -1097,6 +1112,7 @@ class TrainFrame(BasePanel):
 
         cmd = [
             str(python_executable()),
+            "-u",
             "-m",
             module,
             "--preset",
@@ -1169,9 +1185,10 @@ class TrainFrame(BasePanel):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         threading.Thread(target=self._pump_logs, daemon=True).start()
-        self.after(250, self.poll_training)
+        self.after(LOG_POLL_INTERVAL_MS, self.poll_training)
 
     def _pump_logs(self) -> None:
         assert self.process is not None and self.process.stdout is not None
@@ -1179,13 +1196,7 @@ class TrainFrame(BasePanel):
             self.log_queue.put(line)
 
     def poll_training(self) -> None:
-        while True:
-            try:
-                line = self.log_queue.get_nowait()
-            except queue.Empty:
-                break
-            self.log_text.insert(tk.END, line)
-            self.log_text.see(tk.END)
+        drain_log_queue(self.log_queue, self.log_text)
 
         if self.progress_path and self.progress_path.exists():
             payload = read_json(self.progress_path)
@@ -1203,9 +1214,9 @@ class TrainFrame(BasePanel):
         if self.process is None:
             return
         if self.process.poll() is None:
-            self.after(500, self.poll_training)
+            self.after(LOG_POLL_INTERVAL_MS, self.poll_training)
         else:
-            self.after(200, self.poll_training)
+            self.after(LOG_POLL_INTERVAL_MS, self.poll_training)
             if self.stop_requested and self.current_run_dir is not None and self.summary_path is not None and not self.summary_path.exists():
                 payload = write_interrupted_training_summary(
                     self.current_run_dir,
@@ -1813,10 +1824,11 @@ class LeaderboardFrame(BasePanel):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         self.status_var.set("Building leaderboard...")
         threading.Thread(target=self._pump_logs, daemon=True).start()
-        self.after(250, self._poll_process)
+        self.after(LOG_POLL_INTERVAL_MS, self._poll_process)
 
     def _pump_logs(self) -> None:
         assert self.process is not None and self.process.stdout is not None
@@ -1824,17 +1836,11 @@ class LeaderboardFrame(BasePanel):
             self.log_queue.put(line)
 
     def _poll_process(self) -> None:
-        while True:
-            try:
-                line = self.log_queue.get_nowait()
-            except queue.Empty:
-                break
-            self.log_text.insert(tk.END, line)
-            self.log_text.see(tk.END)
+        drain_log_queue(self.log_queue, self.log_text)
         if self.process is None:
             return
         if self.process.poll() is None:
-            self.after(500, self._poll_process)
+            self.after(LOG_POLL_INTERVAL_MS, self._poll_process)
             return
         self.log_text.insert(tk.END, f"\nProcess exited with code {self.process.returncode}\n")
         self.log_text.see(tk.END)

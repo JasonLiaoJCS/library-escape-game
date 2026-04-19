@@ -38,3 +38,10 @@ def test_train_sidebar_has_scrollbar_for_overflowing_controls(app):
     app.update_idletasks()
     assert app.train_frame.setup_scroll.v_scrollbar.winfo_ismapped()
     assert app.train_frame.setup_scroll.content.winfo_reqheight() > app.train_frame.setup_scroll.canvas.winfo_height()
+
+
+def test_train_command_uses_unbuffered_python(app):
+    app.notebook.select(app.train_frame)
+    cmd = app.train_frame._build_train_command()
+    assert cmd[1] == "-u"
+    assert cmd[2] == "-m"
