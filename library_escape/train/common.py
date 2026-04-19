@@ -21,6 +21,7 @@ from ..eval.registry import discover_saved_models
 from ..env.obs_builder import ObsBuilder
 from ..env.single_agent_env import LibraryEscapeEnv
 from ..game_modes import build_game_mode_env_config, normalize_game_mode
+from .io_utils import atomic_write_json
 
 
 def deep_update(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -445,14 +446,15 @@ def load_role_configs(role: str, preset: str | None, game_mode: str) -> tuple[di
 
 
 def write_training_summary(summary_path: Path, payload: dict[str, Any]) -> None:
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    serializable = json.loads(json.dumps(payload, default=str))
-    summary_path.write_text(json.dumps(serializable, indent=2, ensure_ascii=True), encoding="utf-8")
+    # Use the shared atomic writer: the GUI polls this file for the run-list view,
+    # so a plain write_text races with cross-process reads and previously crashed
+    # long self-play runs with WinError 5.
+    atomic_write_json(summary_path, payload, indent=2)
 
 
 def write_model_metadata(model_path: Path, payload: dict[str, Any]) -> None:
     metadata_path = model_path.with_suffix(".meta.json")
-    metadata_path.write_text(json.dumps(json.loads(json.dumps(payload, default=str)), indent=2, ensure_ascii=True), encoding="utf-8")
+    atomic_write_json(metadata_path, payload, indent=2)
 
 
 def resolve_single_agent_run_dir(role: str, train_cfg: dict[str, Any], run_name: str | None, game_mode: str) -> Path:

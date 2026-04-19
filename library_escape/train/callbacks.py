@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
 
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    os.replace(temp_path, path)
+from .io_utils import append_jsonl as _append_jsonl
+from .io_utils import atomic_write_json as _write_json_atomic
 
 
-def _append_jsonl(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+_WRITE_WARNING_INTERVAL_SECONDS = 10.0
 
 
 def format_seconds(seconds: float) -> str:
@@ -77,6 +68,17 @@ class TrainingStatusCallback:
         self._start_time = 0.0
         self._last_flush = 0.0
         self._last_terminal_print = 0.0
+        self._last_write_warning = 0.0
+
+    def _warn_write_failure(self, path: Path) -> None:
+        now = time.perf_counter()
+        if now - self._last_write_warning < _WRITE_WARNING_INTERVAL_SECONDS:
+            return
+        self._last_write_warning = now
+        print(
+            f"[{self.phase_name}] warning: could not update {path.name} after repeated retries; training will continue.",
+            flush=True,
+        )
 
     def _build_payload(self, callback, done: bool = False) -> dict:
         elapsed = max(time.perf_counter() - self._start_time, 1e-6)
@@ -121,8 +123,10 @@ class TrainingStatusCallback:
 
     def _flush(self, callback, done: bool = False) -> None:
         payload = self._build_payload(callback, done=done)
-        _write_json_atomic(self.progress_path, payload)
-        _append_jsonl(self.history_path, payload)
+        if not _write_json_atomic(self.progress_path, payload):
+            self._warn_write_failure(self.progress_path)
+        if not _append_jsonl(self.history_path, payload):
+            self._warn_write_failure(self.history_path)
         now = time.perf_counter()
         if now - self._last_terminal_print >= 5.0 or done:
             self._last_terminal_print = now

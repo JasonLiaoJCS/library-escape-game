@@ -33,6 +33,7 @@ from .common import (
     write_model_metadata,
     write_training_summary,
 )
+from .io_utils import atomic_write_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -323,23 +324,19 @@ def _run_external_mappo_recipe(run_dir: Path, env_config: dict, train_cfg: dict,
         )
 
     request_path = run_dir / "mappo_recipe_request.json"
-    request_path.parent.mkdir(parents=True, exist_ok=True)
-    request_path.write_text(
-        json.dumps(
-            {
-                "seed": args.seed,
-                "preset": args.preset,
-                "run_dir": str(run_dir),
-                "rounds": int(train_cfg["rounds"]),
-                "timesteps_per_round": int(train_cfg["timesteps_per_round"]),
-                "n_envs": int(train_cfg["n_envs"]),
-                "env_config": env_config,
-                "train_config": train_cfg,
-            },
-            indent=2,
-            ensure_ascii=True,
-        ),
-        encoding="utf-8",
+    atomic_write_json(
+        request_path,
+        {
+            "seed": args.seed,
+            "preset": args.preset,
+            "run_dir": str(run_dir),
+            "rounds": int(train_cfg["rounds"]),
+            "timesteps_per_round": int(train_cfg["timesteps_per_round"]),
+            "n_envs": int(train_cfg["n_envs"]),
+            "env_config": env_config,
+            "train_config": train_cfg,
+        },
+        indent=2,
     )
 
     command = command_template.format(
