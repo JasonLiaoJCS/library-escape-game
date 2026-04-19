@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -18,7 +22,7 @@ from ..game_modes import game_mode_label, infer_game_mode_from_models, normalize
 from ..gui.tensorboard_data import load_scalar_series
 from ..replay.io import load_replay
 from ..train.callbacks import format_seconds
-from ..train.common import timestamped_run_name
+from ..train.common import timestamped_run_name, write_model_metadata, write_training_summary
 
 try:  # pragma: no cover - optional GUI plotting dependency
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -28,23 +32,289 @@ except Exception:  # pragma: no cover - fallback if matplotlib unavailable
     Figure = None
 
 
+_JSON_READ_RETRIES = 3
+_JSON_READ_RETRY_DELAY_SECONDS = 0.05
+APP_PALETTE = {
+    "bg": "#0b1220",
+    "surface": "#111b2e",
+    "surface_alt": "#16243b",
+    "surface_soft": "#1b2d48",
+    "border": "#2a3b57",
+    "text": "#e8eef8",
+    "muted": "#9fb0c8",
+    "accent": "#4aa3ff",
+    "accent_active": "#71b8ff",
+    "warm": "#ff9a62",
+    "warm_active": "#ffb184",
+    "success": "#7fd18a",
+}
+PREFERRED_UI_FONTS = ("Segoe UI Variable Text", "Segoe UI", "Arial")
+PREFERRED_MONO_FONTS = ("Cascadia Mono", "Consolas", "Courier New")
+
+
+def enable_windows_high_dpi() -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        user32 = ctypes.windll.user32
+        if hasattr(user32, "SetProcessDpiAwarenessContext") and user32.SetProcessDpiAwarenessContext(-4):
+            return
+    except Exception:
+        pass
+    try:
+        shcore = ctypes.windll.shcore
+        if hasattr(shcore, "SetProcessDpiAwareness"):
+            shcore.SetProcessDpiAwareness(2)
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def _pick_font(preferred: tuple[str, ...], available: set[str]) -> str:
+    for family in preferred:
+        if family in available:
+            return family
+    return preferred[-1]
+
+
 def read_json(path: Path) -> dict:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    for attempt in range(_JSON_READ_RETRIES):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (PermissionError, OSError, json.JSONDecodeError):
+            if attempt == _JSON_READ_RETRIES - 1:
+                return {}
+            time.sleep(_JSON_READ_RETRY_DELAY_SECONDS)
+    return {}
 
 
 def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    rows: list[dict] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            rows.append(json.loads(line))
-    return rows
+    for attempt in range(_JSON_READ_RETRIES):
+        rows: list[dict] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rows.append(json.loads(line))
+            return rows
+        except FileNotFoundError:
+            return []
+        except (PermissionError, OSError, json.JSONDecodeError):
+            if attempt == _JSON_READ_RETRIES - 1:
+                return []
+            time.sleep(_JSON_READ_RETRY_DELAY_SECONDS)
+    return []
+
+
+def _checkpoint_step(path: Path) -> int:
+    match = re.search(r"_(\d+)_steps\.zip$", path.name.lower())
+    return int(match.group(1)) if match else -1
+
+
+def _path_from_summary(value: object) -> Path | None:
+    if value in (None, "", "None"):
+        return None
+    try:
+        candidate = resolve_repo_path(str(value))
+    except Exception:
+        candidate = Path(str(value))
+    return candidate if candidate.exists() else None
+
+
+def find_latest_playable_model(search_root: Path, role: str) -> Path | None:
+    if not search_root.exists():
+        return None
+    role_token = role.lower()
+    candidates: list[Path] = []
+    for path in search_root.rglob("*.zip"):
+        name = path.name.lower()
+        if "latest.zip" in name and role_token in name:
+            candidates.append(path)
+            continue
+        if "_checkpoint_" in name and role_token in name and name.endswith("_steps.zip"):
+            candidates.append(path)
+            continue
+        if name == "best_model.zip":
+            candidates.append(path)
+    if not candidates:
+        return None
+    preferred_candidates = [path for path in candidates if path.name.lower() != "best_model.zip"]
+    if preferred_candidates:
+        candidates = preferred_candidates
+    candidates.sort(key=lambda item: (item.stat().st_mtime, "latest.zip" in item.name.lower(), _checkpoint_step(item)), reverse=True)
+    return candidates[0]
+
+
+def playable_model_artifacts(model_path: Path | None) -> set[Path]:
+    if model_path is None or not model_path.exists():
+        return set()
+    artifacts = {model_path.resolve()}
+    for candidate in (
+        model_path.with_suffix(".meta.json"),
+        model_path.with_suffix(".obsnorm.npz"),
+        model_path.parent / "obsnorm_latest.npz",
+        model_path.parent / "vecnormalize.pkl",
+        model_path.parent.parent / "obsnorm_latest.npz",
+        model_path.parent.parent / "vecnormalize.pkl",
+    ):
+        if candidate.exists():
+            artifacts.add(candidate.resolve())
+    return artifacts
+
+
+def ensure_model_metadata(model_path: Path | None, *, role: str, algorithm: str, run_dir: Path, game_mode: str) -> None:
+    if model_path is None or not model_path.exists():
+        return
+    metadata_path = model_path.with_suffix(".meta.json")
+    if metadata_path.exists():
+        return
+    write_model_metadata(
+        model_path,
+        {
+            "role": role,
+            "algorithm": algorithm,
+            "run_dir": run_dir,
+            "game_mode": game_mode,
+            "game_mode_label": game_mode_label(game_mode),
+        },
+    )
+
+
+def build_interrupted_training_summary(run_dir: Path, context: dict[str, object], progress_payload: dict | None = None) -> dict[str, object]:
+    mode = str(context.get("mode", "enemy"))
+    game_mode = normalize_game_mode(str(context.get("game_mode", "escape")))
+    algorithm = str(context.get("algorithm", "ppo"))
+    progress_payload = progress_payload or read_json(run_dir / "progress.json")
+    payload: dict[str, object] = {
+        "algorithm": algorithm,
+        "run_dir": run_dir,
+        "progress_path": run_dir / "progress.json",
+        "progress_history_path": run_dir / "progress_history.jsonl",
+        "eval_history_path": run_dir / "eval_history.jsonl",
+        "seed": context.get("seed"),
+        "preset": context.get("preset"),
+        "game_mode": game_mode,
+        "game_mode_label": game_mode_label(game_mode),
+        "status": "stopped_early",
+        "completed": False,
+        "stopped_by_user": True,
+        "phase_name": progress_payload.get("phase_name"),
+        "phase_progress": progress_payload.get("phase_progress"),
+        "global_progress": progress_payload.get("global_progress"),
+        "elapsed_seconds": progress_payload.get("elapsed_seconds"),
+    }
+    if mode == "selfplay":
+        enemy_model = find_latest_playable_model(run_dir / "enemy", "enemy")
+        player_model = find_latest_playable_model(run_dir / "player", "player")
+        ensure_model_metadata(enemy_model, role="enemy", algorithm=algorithm, run_dir=run_dir, game_mode=game_mode)
+        ensure_model_metadata(player_model, role="player", algorithm=algorithm, run_dir=run_dir, game_mode=game_mode)
+        payload.update(
+            {
+                "mode": "self_play",
+                "enemy_root": run_dir / "enemy",
+                "player_root": run_dir / "player",
+                "final_enemy_model": enemy_model,
+                "final_player_model": player_model,
+                "resume_from_run": context.get("resume_path"),
+                "resume_enemy_model": enemy_model,
+                "resume_player_model": player_model,
+            }
+        )
+        return payload
+
+    final_model = find_latest_playable_model(run_dir / "models", mode)
+    ensure_model_metadata(final_model, role=mode, algorithm=algorithm, run_dir=run_dir, game_mode=game_mode)
+    payload.update(
+        {
+            "mode": f"single_agent_{mode}",
+            "final_model": final_model,
+            "best_model": None,
+            "resume_path": context.get("resume_path"),
+        }
+    )
+    return payload
+
+
+def write_interrupted_training_summary(run_dir: Path, context: dict[str, object], progress_payload: dict | None = None) -> dict[str, object]:
+    payload = build_interrupted_training_summary(run_dir, context, progress_payload)
+    write_training_summary(run_dir / "training_summary.json", payload)
+    return payload
+
+
+def compact_training_run(run_dir: Path) -> dict[str, int]:
+    run_dir = run_dir.resolve()
+    summary_path = run_dir / "training_summary.json"
+    summary = read_json(summary_path)
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Training summary not found: {summary_path}")
+
+    keep_paths: set[Path] = {summary_path.resolve()}
+    progress_path = run_dir / "progress.json"
+    if progress_path.exists():
+        keep_paths.add(progress_path.resolve())
+
+    mode = str(summary.get("mode", ""))
+    retained_models: list[Path] = []
+    if mode == "self_play":
+        enemy_model = _path_from_summary(summary.get("final_enemy_model")) or find_latest_playable_model(run_dir / "enemy", "enemy")
+        player_model = _path_from_summary(summary.get("final_player_model")) or find_latest_playable_model(run_dir / "player", "player")
+        if enemy_model is not None:
+            summary["final_enemy_model"] = str(enemy_model)
+            retained_models.append(enemy_model)
+            keep_paths.update(playable_model_artifacts(enemy_model))
+        if player_model is not None:
+            summary["final_player_model"] = str(player_model)
+            retained_models.append(player_model)
+            keep_paths.update(playable_model_artifacts(player_model))
+        summary["progress_history_path"] = None
+        summary["eval_history_path"] = None
+    else:
+        role = "enemy" if "enemy" in mode else "player"
+        final_model = _path_from_summary(summary.get("final_model")) or find_latest_playable_model(run_dir / "models", role)
+        if final_model is not None:
+            summary["final_model"] = str(final_model)
+            retained_models.append(final_model)
+            keep_paths.update(playable_model_artifacts(final_model))
+        summary["best_model"] = None
+        summary["progress_history_path"] = None
+        summary["eval_history_path"] = None
+
+    summary["artifacts_compacted"] = True
+    summary["artifacts_compacted_at"] = time.time()
+    summary["retained_models"] = [str(path) for path in retained_models]
+    write_training_summary(summary_path, summary)
+
+    deleted_files = 0
+    deleted_bytes = 0
+    for path in sorted(run_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if resolved in keep_paths:
+            continue
+        deleted_bytes += path.stat().st_size
+        path.unlink()
+        deleted_files += 1
+
+    for directory in sorted((path for path in run_dir.rglob("*") if path.is_dir()), key=lambda item: len(item.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+
+    return {"deleted_files": deleted_files, "deleted_bytes": deleted_bytes, "kept_files": len([path for path in keep_paths if path.exists()])}
 
 
 def open_path(path: Path) -> None:
@@ -97,60 +367,244 @@ class LauncherApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Library Escape Control Center")
-        self.geometry("1520x960")
-        self.minsize(1320, 860)
-        self.configure(bg="#10151b")
+        self._configure_window()
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
+        self._configure_fonts()
         self._configure_theme()
 
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True, padx=14, pady=14)
+        self.notebook = ttk.Notebook(self, style="App.TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=18, pady=18)
 
-        self.play_frame = PlayFrame(notebook)
-        self.train_frame = TrainFrame(notebook)
-        self.results_frame = ResultsFrame(notebook)
-        self.tensorboard_frame = TensorBoardFrame(notebook)
-        self.leaderboard_frame = LeaderboardFrame(notebook)
-        self.replay_frame = ReplayFrame(notebook)
-        self.config_frame = ConfigFrame(notebook)
+        self.play_frame = PlayFrame(self.notebook)
+        self.train_frame = TrainFrame(self.notebook)
+        self.results_frame = ResultsFrame(self.notebook)
+        self.tensorboard_frame = TensorBoardFrame(self.notebook)
+        self.leaderboard_frame = LeaderboardFrame(self.notebook)
+        self.replay_frame = ReplayFrame(self.notebook)
+        self.config_frame = ConfigFrame(self.notebook)
 
-        notebook.add(self.play_frame, text="Play")
-        notebook.add(self.train_frame, text="Train")
-        notebook.add(self.results_frame, text="Results")
-        notebook.add(self.tensorboard_frame, text="TensorBoard")
-        notebook.add(self.leaderboard_frame, text="Leaderboard")
-        notebook.add(self.replay_frame, text="Replay")
-        notebook.add(self.config_frame, text="Config")
+        self.notebook.add(self.play_frame, text="Play")
+        self.notebook.add(self.train_frame, text="Train")
+        self.notebook.add(self.results_frame, text="Results")
+        self.notebook.add(self.tensorboard_frame, text="TensorBoard")
+        self.notebook.add(self.leaderboard_frame, text="Leaderboard")
+        self.notebook.add(self.replay_frame, text="Replay")
+        self.notebook.add(self.config_frame, text="Config")
+
+    def _configure_window(self) -> None:
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        target_width = min(max(int(screen_width * 0.84), 1180), 1840)
+        target_height = min(max(int(screen_height * 0.86), 820), 1280)
+        pos_x = max((screen_width - target_width) // 2, 16)
+        pos_y = max((screen_height - target_height) // 2, 16)
+        self.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
+        self.minsize(1080, 720)
+        self.configure(bg=APP_PALETTE["bg"])
+
+    def _configure_fonts(self) -> None:
+        available_fonts = set(tkfont.families(self))
+        ui_family = _pick_font(PREFERRED_UI_FONTS, available_fonts)
+        mono_family = _pick_font(PREFERRED_MONO_FONTS, available_fonts)
+        dpi = self.winfo_fpixels("1i")
+        base_size = 10 if dpi < 120 else 11
+        small_size = max(base_size - 1, 9)
+        heading_size = base_size + 1
+        hero_size = base_size + 5
+
+        tkfont.nametofont("TkDefaultFont").configure(family=ui_family, size=base_size)
+        tkfont.nametofont("TkTextFont").configure(family=ui_family, size=base_size)
+        tkfont.nametofont("TkMenuFont").configure(family=ui_family, size=base_size)
+        tkfont.nametofont("TkHeadingFont").configure(family=ui_family, size=heading_size, weight="bold")
+        tkfont.nametofont("TkFixedFont").configure(family=mono_family, size=max(base_size, 10))
+
+        tkfont.Font(name="AppCaptionFont", exists=False, family=ui_family, size=small_size)
+        tkfont.Font(name="AppSectionFont", exists=False, family=ui_family, size=heading_size, weight="bold")
+        tkfont.Font(name="AppHeroFont", exists=False, family=ui_family, size=hero_size, weight="bold")
+        tkfont.Font(name="AppTabFont", exists=False, family=ui_family, size=base_size, weight="bold")
 
     def _configure_theme(self) -> None:
-        self.style.configure(".", background="#10151b", foreground="#e9eef5", fieldbackground="#171d24")
-        self.style.configure("TFrame", background="#10151b")
-        self.style.configure("TLabelframe", background="#10151b", foreground="#f3f6fb")
-        self.style.configure("TLabelframe.Label", background="#10151b", foreground="#f3f6fb")
-        self.style.configure("TLabel", background="#10151b", foreground="#e9eef5")
-        self.style.configure("TButton", background="#2a8cff", foreground="#f8fbff", padding=8)
-        self.style.configure("Accent.TButton", background="#ff8d4d", foreground="#10151b", padding=8)
-        self.style.configure("TEntry", fieldbackground="#171d24", foreground="#eef4ff")
-        self.style.configure("TCombobox", fieldbackground="#171d24", foreground="#eef4ff")
-        self.style.configure("Treeview", background="#0b1015", foreground="#d9e4f2", fieldbackground="#0b1015")
-        self.style.configure("Treeview.Heading", background="#18222c", foreground="#f2f6fb")
-        self.style.configure("Horizontal.TProgressbar", troughcolor="#171d24", background="#2a8cff")
-        self.option_add("*Font", "{Segoe UI} 10")
+        palette = APP_PALETTE
+        self.style.configure(".", background=palette["bg"], foreground=palette["text"], fieldbackground=palette["surface"])
+        self.style.configure("TFrame", background=palette["bg"])
+        self.style.configure("Surface.TFrame", background=palette["surface"])
+        self.style.configure("Card.TFrame", background=palette["surface_alt"])
+        self.style.configure("TLabel", background=palette["bg"], foreground=palette["text"])
+        self.style.configure("Subdued.TLabel", background=palette["surface_alt"], foreground=palette["muted"])
+        self.style.configure("MetricLabel.TLabel", background=palette["surface_alt"], foreground=palette["muted"], font="AppCaptionFont")
+        self.style.configure("MetricValue.TLabel", background=palette["surface_alt"], foreground=palette["text"], font="AppSectionFont")
+        self.style.configure("Hero.TLabel", background=palette["surface_alt"], foreground="#f8fbff", font="AppHeroFont")
+        self.style.configure("TLabelframe", background=palette["bg"], foreground="#f8fbff", padding=14)
+        self.style.configure("TLabelframe.Label", background=palette["bg"], foreground="#f8fbff", font="AppSectionFont")
+        self.style.configure("TButton", background=palette["accent"], foreground="#08111d", padding=(14, 10), font="AppTabFont")
+        self.style.map(
+            "TButton",
+            background=[("active", palette["accent_active"]), ("pressed", palette["accent_active"])],
+            foreground=[("disabled", palette["muted"])],
+        )
+        self.style.configure("Accent.TButton", background=palette["warm"], foreground="#141922", padding=(14, 10), font="AppTabFont")
+        self.style.map("Accent.TButton", background=[("active", palette["warm_active"]), ("pressed", palette["warm_active"])])
+        self.style.configure("TCheckbutton", background=palette["bg"], foreground=palette["text"])
+        self.style.configure("TEntry", fieldbackground=palette["surface"], foreground=palette["text"], padding=(10, 8))
+        self.style.configure(
+            "TCombobox",
+            fieldbackground=palette["surface"],
+            background=palette["surface"],
+            foreground=palette["text"],
+            arrowsize=14,
+            padding=(10, 8),
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", palette["surface"])],
+            background=[("readonly", palette["surface"])],
+            foreground=[("readonly", palette["text"])],
+        )
+        self.style.configure(
+            "Treeview",
+            background=palette["surface"],
+            foreground=palette["text"],
+            fieldbackground=palette["surface"],
+            rowheight=30,
+        )
+        self.style.configure("Treeview.Heading", background=palette["surface_alt"], foreground="#f8fbff", font="AppTabFont")
+        self.style.configure("Horizontal.TProgressbar", troughcolor=palette["surface"], background=palette["accent"], thickness=16)
+        self.style.configure("App.TNotebook", background=palette["bg"], borderwidth=0)
+        self.style.configure(
+            "App.TNotebook.Tab",
+            background=palette["surface"],
+            foreground=palette["muted"],
+            padding=(18, 10),
+            font="AppTabFont",
+        )
+        self.style.map(
+            "App.TNotebook.Tab",
+            background=[("selected", palette["surface_alt"]), ("active", palette["surface_soft"])],
+            foreground=[("selected", "#f8fbff"), ("active", "#f8fbff")],
+        )
+        self.style.configure("Vertical.TScrollbar", background=palette["surface_alt"], troughcolor=palette["bg"])
+        self.style.configure("Horizontal.TScrollbar", background=palette["surface_alt"], troughcolor=palette["bg"])
+
+        self.option_add("*Font", "TkDefaultFont")
+        self.option_add("*Listbox.background", palette["surface"])
+        self.option_add("*Listbox.foreground", palette["text"])
+        self.option_add("*Listbox.selectBackground", palette["accent"])
+        self.option_add("*Listbox.selectForeground", "#f8fbff")
+        self.option_add("*Listbox.highlightThickness", 1)
+        self.option_add("*Listbox.highlightBackground", palette["border"])
+        self.option_add("*Listbox.relief", "flat")
+        self.option_add("*Listbox.borderWidth", 0)
+        self.option_add("*TCombobox*Listbox.background", palette["surface"])
+        self.option_add("*TCombobox*Listbox.foreground", palette["text"])
+        self.option_add("*TCombobox*Listbox.selectBackground", palette["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "#f8fbff")
+
+
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, master, *, background: str | None = None) -> None:
+        super().__init__(master, style="TFrame")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self._background = background or APP_PALETTE["bg"]
+        self.canvas = tk.Canvas(
+            self,
+            bg=self._background,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
+        self.v_scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.v_scrollbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.v_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self.content = ttk.Frame(self.canvas, style="TFrame")
+        self.content.columnconfigure(0, weight=1)
+        self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+
+        self.content.bind("<Configure>", self._sync_scroll_region)
+        self.canvas.bind("<Configure>", self._sync_content_width)
+        self.canvas.bind("<Enter>", self._bind_mousewheel)
+        self.canvas.bind("<Leave>", self._unbind_mousewheel)
+        self.content.bind("<Enter>", self._bind_mousewheel)
+        self.content.bind("<Leave>", self._unbind_mousewheel)
+
+    def _sync_scroll_region(self, _event=None) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _sync_content_width(self, event) -> None:
+        self.canvas.itemconfigure(self.window_id, width=event.width)
+
+    def _bind_mousewheel(self, _event=None) -> None:
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self, _event=None) -> None:
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel(self, event) -> None:
+        if hasattr(event, "delta") and event.delta:
+            step = -1 * int(event.delta / 120) if event.delta else 0
+        elif getattr(event, "num", None) == 4:
+            step = -1
+        elif getattr(event, "num", None) == 5:
+            step = 1
+        else:
+            step = 0
+        if step:
+            self.canvas.yview_scroll(step, "units")
 
 
 class BasePanel(ttk.Frame):
     def __init__(self, master) -> None:
         super().__init__(master, padding=12)
 
-    def section(self, row: int, column: int, title: str, columnspan: int = 1, rowspan: int = 1) -> ttk.LabelFrame:
-        frame = ttk.LabelFrame(self, text=title, padding=12)
-        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=8, pady=8)
+    def section(
+        self,
+        row: int,
+        column: int,
+        title: str,
+        columnspan: int = 1,
+        rowspan: int = 1,
+        *,
+        parent=None,
+        padx: int = 8,
+        pady: int = 8,
+    ) -> ttk.LabelFrame:
+        host = parent or self
+        frame = ttk.LabelFrame(host, text=title, padding=14)
+        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=padx, pady=pady)
         return frame
 
-    def text_box(self, master, height: int = 12) -> tk.Text:
-        widget = tk.Text(master, bg="#0b1015", fg="#d9e4f2", insertbackground="#ffffff", wrap="word", font=("Consolas", 10), height=height)
+    def text_box(self, master, height: int = 12, wrap: str = "word", monospace: bool = False) -> tk.Text:
+        widget = tk.Text(
+            master,
+            bg=APP_PALETTE["surface"],
+            fg=APP_PALETTE["text"],
+            insertbackground="#ffffff",
+            wrap=wrap,
+            font="TkFixedFont" if monospace else "TkTextFont",
+            height=height,
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=12,
+            spacing1=1,
+            spacing3=2,
+            highlightthickness=1,
+            highlightbackground=APP_PALETTE["border"],
+            highlightcolor=APP_PALETTE["accent"],
+            selectbackground=APP_PALETTE["accent"],
+            selectforeground="#f8fbff",
+        )
         return widget
+
+    def scrollable_frame(self, master, *, background: str | None = None) -> ScrollableFrame:
+        return ScrollableFrame(master, background=background)
 
 
 class PlayFrame(BasePanel):
@@ -341,15 +795,53 @@ class TrainFrame(BasePanel):
 
     def __init__(self, master) -> None:
         super().__init__(master)
-        self.columnconfigure(0, weight=0)
-        self.columnconfigure(1, weight=0)
-        self.columnconfigure(2, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        controls = self.section(0, 0, "Training Setup")
-        advanced = self.section(0, 1, "Algorithms And Curriculum")
-        monitor = self.section(0, 2, "Progress")
-        logs = self.section(1, 0, "Logs", columnspan=3)
+        self.main_split = ttk.Panedwindow(self, orient="horizontal")
+        self.main_split.grid(row=0, column=0, sticky="nsew")
+
+        sidebar = ttk.Frame(self.main_split, style="TFrame")
+        sidebar.configure(width=430)
+        sidebar.columnconfigure(0, weight=1)
+        sidebar.rowconfigure(0, weight=1)
+
+        workspace = ttk.Frame(self.main_split, style="TFrame")
+        workspace.columnconfigure(0, weight=1)
+        workspace.rowconfigure(0, weight=1)
+
+        self.main_split.add(sidebar, weight=3)
+        self.main_split.add(workspace, weight=7)
+
+        self.sidebar_tabs = ttk.Notebook(sidebar, style="App.TNotebook")
+        self.sidebar_tabs.grid(row=0, column=0, sticky="nsew")
+
+        self.setup_scroll = self.scrollable_frame(self.sidebar_tabs)
+        self.curriculum_scroll = self.scrollable_frame(self.sidebar_tabs)
+        self.sidebar_tabs.add(self.setup_scroll, text="Setup")
+        self.sidebar_tabs.add(self.curriculum_scroll, text="Curriculum")
+
+        controls = self.section(0, 0, "Training Setup", parent=self.setup_scroll.content, padx=0, pady=0)
+        advanced = self.section(0, 0, "Algorithms And Curriculum", parent=self.curriculum_scroll.content, padx=0, pady=0)
+
+        self.workspace_split = ttk.Panedwindow(workspace, orient="vertical")
+        self.workspace_split.grid(row=0, column=0, sticky="nsew")
+
+        monitor_host = ttk.Frame(self.workspace_split, style="TFrame")
+        monitor_host.configure(height=280)
+        monitor_host.columnconfigure(0, weight=1)
+        monitor_host.rowconfigure(0, weight=1)
+
+        logs_host = ttk.Frame(self.workspace_split, style="TFrame")
+        logs_host.configure(height=420)
+        logs_host.columnconfigure(0, weight=1)
+        logs_host.rowconfigure(0, weight=1)
+
+        self.workspace_split.add(monitor_host, weight=2)
+        self.workspace_split.add(logs_host, weight=5)
+
+        monitor = self.section(0, 0, "Training Monitor", parent=monitor_host, padx=0, pady=0)
+        logs = self.section(0, 0, "Training Logs", parent=logs_host, padx=0, pady=0)
         logs.rowconfigure(0, weight=1)
         logs.columnconfigure(0, weight=1)
 
@@ -426,6 +918,7 @@ class TrainFrame(BasePanel):
         button_bar.grid(row=21, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(button_bar, text="Start Training", style="Accent.TButton", command=self.start_training).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Stop", command=self.stop_training).pack(side="left", padx=(0, 8))
+        ttk.Button(button_bar, text="Compact Run", command=self.compact_current_run).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Open Run Folder", command=self.open_run_folder).pack(side="left")
         ttk.Button(controls, text="Open TensorBoard Server", command=self.open_tensorboard).grid(row=22, column=0, sticky="ew", pady=(10, 0))
         controls.columnconfigure(0, weight=1)
@@ -454,39 +947,76 @@ class TrainFrame(BasePanel):
         ttk.Entry(advanced, textvariable=self.mappo_notes_var).grid(row=18, column=0, sticky="ew", pady=(2, 0))
         advanced.columnconfigure(0, weight=1)
 
-        self.progress_bar = ttk.Progressbar(monitor, mode="determinate", maximum=100)
-        self.progress_bar.grid(row=0, column=0, sticky="ew", pady=(4, 10))
         monitor.columnconfigure(0, weight=1)
-        monitor.columnconfigure(1, weight=1)
+        hero = ttk.Frame(monitor, style="Card.TFrame", padding=18)
+        hero.grid(row=0, column=0, sticky="ew")
+        hero.columnconfigure(0, weight=1)
+
+        ttk.Label(hero, text="Active phase", style="MetricLabel.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(hero, textvariable=self.phase_var, style="Hero.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 4))
+        ttk.Label(
+            hero,
+            textvariable=self.run_dir_var,
+            style="Subdued.TLabel",
+            justify="left",
+            wraplength=960,
+        ).grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        self.progress_bar = ttk.Progressbar(hero, mode="determinate", maximum=100)
+        self.progress_bar.grid(row=3, column=0, sticky="ew")
+
+        metrics = ttk.Frame(monitor, style="TFrame")
+        metrics.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        for column in range(3):
+            metrics.columnconfigure(column, weight=1)
 
         metric_pairs = [
-            ("Run dir", self.run_dir_var),
-            ("Phase", self.phase_var),
             ("Progress", self.progress_var),
             ("Elapsed", self.elapsed_var),
             ("ETA", self.eta_var),
             ("FPS", self.fps_var),
             ("Mean reward", self.reward_var),
         ]
-        for idx, (label, variable) in enumerate(metric_pairs, start=1):
-            ttk.Label(monitor, text=label).grid(row=idx, column=0, sticky="w", pady=2)
-            ttk.Label(monitor, textvariable=variable).grid(row=idx, column=1, sticky="w", pady=2)
+        for idx, (label, variable) in enumerate(metric_pairs):
+            self._metric_card(metrics, idx // 3, idx % 3, label, variable)
 
-        self.log_text = self.text_box(logs, height=24)
+        self.log_text = self.text_box(logs, height=20, wrap="none", monospace=True)
         self.log_text.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(logs, orient="vertical", command=self.log_text.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=scrollbar.set)
+        v_scrollbar = ttk.Scrollbar(logs, orient="vertical", command=self.log_text.yview)
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar = ttk.Scrollbar(logs, orient="horizontal", command=self.log_text.xview)
+        h_scrollbar.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.log_text.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
 
         self.process: subprocess.Popen[str] | None = None
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.current_run_dir: Path | None = None
         self.progress_path: Path | None = None
+        self.summary_path: Path | None = None
+        self.current_training_context: dict[str, object] = {}
+        self.stop_requested = False
 
         self.mode_var.trace_add("write", lambda *_: self._sync_mode_fields())
         self.game_mode_var.trace_add("write", lambda *_: self._sync_game_mode_hint())
         self._sync_mode_fields()
         self._sync_game_mode_hint()
+        self.after_idle(self._set_default_split_positions)
+
+    def _metric_card(self, master, row: int, column: int, label: str, variable: tk.StringVar) -> None:
+        card = ttk.Frame(master, style="Card.TFrame", padding=14)
+        card.grid(row=row, column=column, sticky="nsew", padx=6, pady=6)
+        ttk.Label(card, text=label, style="MetricLabel.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(card, textvariable=variable, style="MetricValue.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+    def _set_default_split_positions(self) -> None:
+        try:
+            total_width = max(self.winfo_width(), self.winfo_reqwidth())
+            sidebar_width = min(max(int(total_width * 0.34), 360), 520)
+            self.main_split.sashpos(0, sidebar_width)
+            total_height = max(self.winfo_height(), self.winfo_reqheight())
+            monitor_height = min(max(int(total_height * 0.32), 220), 340)
+            self.workspace_split.sashpos(0, monitor_height)
+        except tk.TclError:
+            return
 
     def _sync_mode_fields(self) -> None:
         mode = self.mode_var.get()
@@ -598,7 +1128,16 @@ class TrainFrame(BasePanel):
 
         self.current_run_dir = checkpoint_root_for_mode(mode, game_mode) / run_name
         self.progress_path = self.current_run_dir / "progress.json"
+        self.summary_path = self.current_run_dir / "training_summary.json"
         self.run_dir_var.set(str(self.current_run_dir))
+        self.current_training_context = {
+            "mode": mode,
+            "game_mode": game_mode,
+            "algorithm": self.algorithm_var.get(),
+            "preset": self.preset_var.get(),
+            "seed": seed,
+            "resume_path": self.resume_path_var.get().strip() or None,
+        }
         return cmd
 
     def _sync_game_mode_hint(self) -> None:
@@ -620,6 +1159,7 @@ class TrainFrame(BasePanel):
             return
 
         cmd = self._build_train_command()
+        self.stop_requested = False
         self.log_text.delete("1.0", tk.END)
         self.log_text.insert(tk.END, "Launching:\n" + " ".join(cmd) + "\n\n")
         self.process = subprocess.Popen(
@@ -649,15 +1189,16 @@ class TrainFrame(BasePanel):
 
         if self.progress_path and self.progress_path.exists():
             payload = read_json(self.progress_path)
-            progress = float(payload.get("global_progress", 0.0))
-            self.progress_bar["value"] = progress * 100.0
-            self.phase_var.set(str(payload.get("phase_name", "Idle")))
-            self.progress_var.set(f"{progress * 100.0:5.1f}%")
-            self.elapsed_var.set(format_seconds(float(payload.get("elapsed_seconds", 0.0))))
-            self.eta_var.set(str(payload.get("eta_hms", "--:--")))
-            self.fps_var.set(f"{float(payload.get('fps', 0.0)):.0f}")
-            mean_reward = payload.get("mean_episode_reward")
-            self.reward_var.set("n/a" if mean_reward is None else f"{float(mean_reward):.2f}")
+            if payload:
+                progress = float(payload.get("global_progress", 0.0))
+                self.progress_bar["value"] = progress * 100.0
+                self.phase_var.set(str(payload.get("phase_name", "Idle")))
+                self.progress_var.set(f"{progress * 100.0:5.1f}%")
+                self.elapsed_var.set(format_seconds(float(payload.get("elapsed_seconds", 0.0))))
+                self.eta_var.set(str(payload.get("eta_hms", "--:--")))
+                self.fps_var.set(f"{float(payload.get('fps', 0.0)):.0f}")
+                mean_reward = payload.get("mean_episode_reward")
+                self.reward_var.set("n/a" if mean_reward is None else f"{float(mean_reward):.2f}")
 
         if self.process is None:
             return
@@ -665,15 +1206,52 @@ class TrainFrame(BasePanel):
             self.after(500, self.poll_training)
         else:
             self.after(200, self.poll_training)
+            if self.stop_requested and self.current_run_dir is not None and self.summary_path is not None and not self.summary_path.exists():
+                payload = write_interrupted_training_summary(
+                    self.current_run_dir,
+                    self.current_training_context,
+                    read_json(self.progress_path) if self.progress_path is not None else None,
+                )
+                self.log_text.insert(
+                    tk.END,
+                    "\nWrote interrupted training summary for Results view: "
+                    + str(self.current_run_dir / "training_summary.json")
+                    + "\n",
+                )
+                if payload.get("final_model") is None and payload.get("final_enemy_model") is None:
+                    self.log_text.insert(tk.END, "No saved checkpoint was found yet; the run will appear in Results without a playable model.\n")
             self.log_text.insert(tk.END, f"\nProcess exited with code {self.process.returncode}\n")
             self.log_text.see(tk.END)
+            self.stop_requested = False
             self.process = None
 
     def stop_training(self) -> None:
         if self.process is None or self.process.poll() is not None:
             return
+        self.stop_requested = True
         self.process.terminate()
         self.log_text.insert(tk.END, "\nRequested training stop.\n")
+        self.log_text.see(tk.END)
+
+    def compact_current_run(self) -> None:
+        if self.current_run_dir is None:
+            messagebox.showinfo("No run", "Start, stop, or select a training run first.")
+            return
+        if not (self.current_run_dir / "training_summary.json").exists():
+            messagebox.showwarning("Summary missing", "This run does not have a training_summary.json yet.")
+            return
+        if not messagebox.askyesno(
+            "Compact run",
+            "Keep only the latest playable checkpoint and minimal metadata for this run?\n\n"
+            "This will delete extra checkpoints, TensorBoard logs, monitor CSVs, and other large artifacts.",
+        ):
+            return
+        result = compact_training_run(self.current_run_dir)
+        freed_mb = result["deleted_bytes"] / (1024 * 1024)
+        self.log_text.insert(
+            tk.END,
+            f"\nCompacted run {self.current_run_dir.name}: deleted {result['deleted_files']} files, freed {freed_mb:.1f} MB.\n",
+        )
         self.log_text.see(tk.END)
 
     def open_run_folder(self) -> None:
@@ -718,8 +1296,29 @@ class ResultsFrame(BasePanel):
             variable=self.deterministic_playback_var,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
-        self.run_list = tk.Listbox(browser, bg="#0b1015", fg="#d9e4f2", selectbackground="#2a8cff", height=24)
-        self.run_list.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        run_list_host = ttk.Frame(browser, style="TFrame")
+        run_list_host.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        run_list_host.columnconfigure(0, weight=1)
+        run_list_host.rowconfigure(0, weight=1)
+
+        self.run_list = tk.Listbox(
+            run_list_host,
+            bg=APP_PALETTE["surface"],
+            fg=APP_PALETTE["text"],
+            selectbackground=APP_PALETTE["accent"],
+            selectforeground="#f8fbff",
+            height=24,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=APP_PALETTE["border"],
+            activestyle="none",
+            font="TkTextFont",
+        )
+        self.run_list.grid(row=0, column=0, sticky="nsew")
+        run_list_scrollbar = ttk.Scrollbar(run_list_host, orient="vertical", command=self.run_list.yview)
+        run_list_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.run_list.configure(yscrollcommand=run_list_scrollbar.set)
         self.run_list.bind("<<ListboxSelect>>", lambda _event: self.load_selected_run())
         browser.rowconfigure(4, weight=1)
         browser.columnconfigure(0, weight=1)
@@ -727,6 +1326,7 @@ class ResultsFrame(BasePanel):
         button_bar = ttk.Frame(browser)
         button_bar.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Button(button_bar, text="Open Folder", command=self.open_selected_folder).pack(side="left", padx=(0, 8))
+        ttk.Button(button_bar, text="Compact Run", command=self.compact_selected_run).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Evaluate", command=self.evaluate_selected).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="Play AI vs AI", command=self.play_selected).pack(side="left", padx=(0, 8))
         ttk.Button(button_bar, text="TensorBoard Server", command=self.tensorboard_selected).pack(side="left")
@@ -736,13 +1336,18 @@ class ResultsFrame(BasePanel):
         upper = ttk.Panedwindow(detail, orient="vertical")
         upper.grid(row=1, column=0, sticky="nsew")
 
-        text_frame = ttk.Frame(upper)
+        text_frame = ttk.Frame(upper, style="TFrame")
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
         plot_frame = ttk.Frame(upper)
         upper.add(text_frame, weight=1)
         upper.add(plot_frame, weight=2)
 
         self.detail_text = self.text_box(text_frame, height=14)
-        self.detail_text.pack(fill="both", expand=True)
+        self.detail_text.grid(row=0, column=0, sticky="nsew")
+        detail_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=self.detail_text.yview)
+        detail_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.detail_text.configure(yscrollcommand=detail_scrollbar.set)
 
         self.plot_frame = plot_frame
         self.figure_canvas = None
@@ -778,12 +1383,14 @@ class ResultsFrame(BasePanel):
 
         lines = [
             f"Mode: {summary.get('mode')}",
+            f"Status: {summary.get('status', 'completed')}",
             f"Game mode: {game_mode_label(normalize_game_mode(summary.get('game_mode', summary.get('env_config', {}).get('world', {}).get('game_mode', 'escape'))))}",
             f"Algorithm: {summary.get('algorithm', 'n/a')}",
             f"Run dir: {self.selected_run_dir}",
             f"Final model: {summary.get('final_model') or summary.get('final_enemy_model')}",
             f"Preset: {summary.get('preset', 'n/a')}",
             f"Seed: {summary.get('seed', 'n/a')}",
+            f"Compacted: {'yes' if summary.get('artifacts_compacted') else 'no'}",
             "",
             "Summary JSON:",
             json.dumps(summary, indent=2, ensure_ascii=False),
@@ -801,20 +1408,20 @@ class ResultsFrame(BasePanel):
         if self.figure_canvas is not None:
             self.figure_canvas.get_tk_widget().destroy()
 
-        figure = Figure(figsize=(7.4, 5.2), dpi=100, facecolor="#10151b")
+        figure = Figure(figsize=(7.4, 5.2), dpi=120, facecolor=APP_PALETTE["bg"])
         ax1 = figure.add_subplot(211)
         ax2 = figure.add_subplot(212)
         for axis in (ax1, ax2):
-            axis.set_facecolor("#0b1015")
-            axis.tick_params(colors="#d9e4f2")
-            axis.title.set_color("#f4f8ff")
-            axis.xaxis.label.set_color("#d9e4f2")
-            axis.yaxis.label.set_color("#d9e4f2")
+            axis.set_facecolor(APP_PALETTE["surface"])
+            axis.tick_params(colors=APP_PALETTE["text"])
+            axis.title.set_color("#f8fbff")
+            axis.xaxis.label.set_color(APP_PALETTE["text"])
+            axis.yaxis.label.set_color(APP_PALETTE["text"])
 
         if progress_rows:
             xs = [row.get("global_timesteps", row.get("phase_timesteps", 0)) for row in progress_rows]
             ys = [row.get("mean_episode_reward") if row.get("mean_episode_reward") is not None else 0.0 for row in progress_rows]
-            ax1.plot(xs, ys, color="#2a8cff", linewidth=2.0)
+            ax1.plot(xs, ys, color=APP_PALETTE["accent"], linewidth=2.0)
         ax1.set_title("Training Reward Trend")
         ax1.set_xlabel("Timesteps")
         ax1.set_ylabel("Mean Episode Reward")
@@ -823,9 +1430,9 @@ class ResultsFrame(BasePanel):
             ex = [row.get("num_timesteps", 0) for row in eval_rows]
             ey = [row.get("last_mean_reward", 0.0) for row in eval_rows]
             by = [row.get("best_mean_reward", 0.0) for row in eval_rows]
-            ax2.plot(ex, ey, color="#ff8d4d", linewidth=2.0, label="Eval reward")
-            ax2.plot(ex, by, color="#7ad151", linewidth=1.6, linestyle="--", label="Best reward")
-            ax2.legend(facecolor="#10151b", edgecolor="#33404d", labelcolor="#d9e4f2")
+            ax2.plot(ex, ey, color=APP_PALETTE["warm"], linewidth=2.0, label="Eval reward")
+            ax2.plot(ex, by, color=APP_PALETTE["success"], linewidth=1.6, linestyle="--", label="Best reward")
+            ax2.legend(facecolor=APP_PALETTE["bg"], edgecolor=APP_PALETTE["border"], labelcolor=APP_PALETTE["text"])
         ax2.set_title("Evaluation Reward")
         ax2.set_xlabel("Timesteps")
         ax2.set_ylabel("Mean Eval Reward")
@@ -839,6 +1446,26 @@ class ResultsFrame(BasePanel):
         if self.selected_run_dir is None:
             return
         open_path(self.selected_run_dir)
+
+    def compact_selected_run(self) -> None:
+        if self.selected_run_dir is None:
+            return
+        if not messagebox.askyesno(
+            "Compact run",
+            "Keep only the latest playable checkpoint and minimal metadata for this selected run?\n\n"
+            "This cannot be undone from the GUI.",
+        ):
+            return
+        result = compact_training_run(self.selected_run_dir)
+        freed_mb = result["deleted_bytes"] / (1024 * 1024)
+        messagebox.showinfo(
+            "Run compacted",
+            f"Deleted {result['deleted_files']} files and freed {freed_mb:.1f} MB.\n\n"
+            f"Kept {result['kept_files']} essential files for playback and Results.",
+        )
+        self.refresh_runs()
+        self.summary_path_var.set(str(self.selected_run_dir))
+        self.load_selected_run()
 
     def tensorboard_selected(self) -> None:
         if self.selected_run_dir is None:
@@ -909,15 +1536,57 @@ class TensorBoardFrame(BasePanel):
         ttk.Button(browser, text="Browse Root", command=self.browse_root).grid(row=1, column=1, padx=(8, 0))
         ttk.Button(browser, text="Refresh Runs", command=self.refresh_runs).grid(row=2, column=0, sticky="ew", pady=(0, 8))
 
-        self.run_list = tk.Listbox(browser, bg="#0b1015", fg="#d9e4f2", selectbackground="#2a8cff", height=22)
-        self.run_list.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        run_list_host = ttk.Frame(browser, style="TFrame")
+        run_list_host.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        run_list_host.columnconfigure(0, weight=1)
+        run_list_host.rowconfigure(0, weight=1)
+
+        self.run_list = tk.Listbox(
+            run_list_host,
+            bg=APP_PALETTE["surface"],
+            fg=APP_PALETTE["text"],
+            selectbackground=APP_PALETTE["accent"],
+            selectforeground="#f8fbff",
+            height=22,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=APP_PALETTE["border"],
+            activestyle="none",
+            font="TkTextFont",
+        )
+        self.run_list.grid(row=0, column=0, sticky="nsew")
+        run_list_scrollbar = ttk.Scrollbar(run_list_host, orient="vertical", command=self.run_list.yview)
+        run_list_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.run_list.configure(yscrollcommand=run_list_scrollbar.set)
         self.run_list.bind("<<ListboxSelect>>", lambda _event: self.load_selected_run())
         browser.rowconfigure(3, weight=1)
         browser.columnconfigure(0, weight=1)
 
         ttk.Label(detail, textvariable=self.summary_var).grid(row=0, column=0, columnspan=2, sticky="w")
-        self.tag_list = tk.Listbox(detail, bg="#0b1015", fg="#d9e4f2", selectbackground="#2a8cff", selectmode=tk.EXTENDED, width=32)
-        self.tag_list.grid(row=1, column=0, sticky="nsw")
+        tag_list_host = ttk.Frame(detail, style="TFrame")
+        tag_list_host.grid(row=1, column=0, sticky="nsew")
+        tag_list_host.columnconfigure(0, weight=1)
+        tag_list_host.rowconfigure(0, weight=1)
+        self.tag_list = tk.Listbox(
+            tag_list_host,
+            bg=APP_PALETTE["surface"],
+            fg=APP_PALETTE["text"],
+            selectbackground=APP_PALETTE["accent"],
+            selectforeground="#f8fbff",
+            selectmode=tk.EXTENDED,
+            width=32,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=APP_PALETTE["border"],
+            activestyle="none",
+            font="TkTextFont",
+        )
+        self.tag_list.grid(row=0, column=0, sticky="nsew")
+        tag_scrollbar = ttk.Scrollbar(tag_list_host, orient="vertical", command=self.tag_list.yview)
+        tag_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tag_list.configure(yscrollcommand=tag_scrollbar.set)
         self.tag_list.bind("<<ListboxSelect>>", lambda _event: self.render_plot())
 
         right = ttk.Frame(detail)
@@ -931,6 +1600,9 @@ class TensorBoardFrame(BasePanel):
         self.figure_canvas = None
         self.stats_text = self.text_box(right, height=8)
         self.stats_text.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        stats_scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.stats_text.yview)
+        stats_scrollbar.grid(row=1, column=1, sticky="ns", pady=(10, 0))
+        self.stats_text.configure(yscrollcommand=stats_scrollbar.set)
 
         self.selected_run_dir: Path | None = None
         self.run_summaries: list[dict] = []
@@ -988,23 +1660,23 @@ class TensorBoardFrame(BasePanel):
         if self.figure_canvas is not None:
             self.figure_canvas.get_tk_widget().destroy()
 
-        figure = Figure(figsize=(8.2, 5.2), dpi=100, facecolor="#10151b")
+        figure = Figure(figsize=(8.2, 5.2), dpi=120, facecolor=APP_PALETTE["bg"])
         axes = [figure.add_subplot(len(tags), 1, idx + 1) for idx in range(len(tags))]
         if len(tags) == 1:
             axes = [axes[0]]
         stats_lines: list[str] = []
 
         for axis, tag in zip(axes, tags):
-            axis.set_facecolor("#0b1015")
-            axis.tick_params(colors="#d9e4f2")
-            axis.title.set_color("#f4f8ff")
-            axis.xaxis.label.set_color("#d9e4f2")
-            axis.yaxis.label.set_color("#d9e4f2")
+            axis.set_facecolor(APP_PALETTE["surface"])
+            axis.tick_params(colors=APP_PALETTE["text"])
+            axis.title.set_color("#f8fbff")
+            axis.xaxis.label.set_color(APP_PALETTE["text"])
+            axis.yaxis.label.set_color(APP_PALETTE["text"])
 
             points = self.scalar_series.get(tag, [])
             xs = [step for step, _ in points]
             ys = [value for _, value in points]
-            axis.plot(xs, ys, color="#2a8cff", linewidth=1.8)
+            axis.plot(xs, ys, color=APP_PALETTE["accent"], linewidth=1.8)
             axis.set_title(tag)
             axis.set_xlabel("Step")
             axis.set_ylabel("Value")
@@ -1224,8 +1896,29 @@ class ReplayFrame(BasePanel):
         ttk.Button(browser, text="Browse Root", command=self.browse_root).grid(row=1, column=1, padx=(8, 0))
         ttk.Button(browser, text="Refresh", command=self.refresh_replays).grid(row=2, column=0, sticky="ew", pady=(0, 8))
 
-        self.replay_list = tk.Listbox(browser, bg="#0b1015", fg="#d9e4f2", selectbackground="#2a8cff", height=24)
-        self.replay_list.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        replay_list_host = ttk.Frame(browser, style="TFrame")
+        replay_list_host.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        replay_list_host.columnconfigure(0, weight=1)
+        replay_list_host.rowconfigure(0, weight=1)
+
+        self.replay_list = tk.Listbox(
+            replay_list_host,
+            bg=APP_PALETTE["surface"],
+            fg=APP_PALETTE["text"],
+            selectbackground=APP_PALETTE["accent"],
+            selectforeground="#f8fbff",
+            height=24,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=APP_PALETTE["border"],
+            activestyle="none",
+            font="TkTextFont",
+        )
+        self.replay_list.grid(row=0, column=0, sticky="nsew")
+        replay_scrollbar = ttk.Scrollbar(replay_list_host, orient="vertical", command=self.replay_list.yview)
+        replay_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.replay_list.configure(yscrollcommand=replay_scrollbar.set)
         self.replay_list.bind("<<ListboxSelect>>", lambda _event: self.load_selected_replay())
         browser.rowconfigure(3, weight=1)
         browser.columnconfigure(0, weight=1)
@@ -1237,8 +1930,12 @@ class ReplayFrame(BasePanel):
         ttk.Button(button_bar, text="Export Frames", command=self.export_selected).pack(side="left")
 
         ttk.Label(detail, textvariable=self.selected_path_var).grid(row=0, column=0, sticky="w")
+        detail.rowconfigure(1, weight=1)
         self.detail_text = self.text_box(detail, height=24)
         self.detail_text.grid(row=1, column=0, sticky="nsew")
+        detail_scrollbar = ttk.Scrollbar(detail, orient="vertical", command=self.detail_text.yview)
+        detail_scrollbar.grid(row=1, column=1, sticky="ns")
+        self.detail_text.configure(yscrollcommand=detail_scrollbar.set)
         export_bar = ttk.Frame(detail)
         export_bar.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         ttk.Entry(export_bar, textvariable=self.export_dir_var).pack(side="left", fill="x", expand=True)
@@ -1320,8 +2017,11 @@ class ConfigFrame(BasePanel):
     def __init__(self, master) -> None:
         super().__init__(master)
         self.columnconfigure(0, weight=1)
-        docs = self.section(0, 0, "Quick Access")
-        tips = self.section(1, 0, "What To Edit")
+        self.rowconfigure(0, weight=1)
+        scroll_host = self.scrollable_frame(self)
+        scroll_host.grid(row=0, column=0, sticky="nsew")
+        docs = self.section(0, 0, "Quick Access", parent=scroll_host.content)
+        tips = self.section(1, 0, "What To Edit", parent=scroll_host.content)
 
         buttons = [
             ("Quick Start Guide", REPO_ROOT / "docs" / "OPERATION_QUICKSTART.md"),
@@ -1359,10 +2059,11 @@ class ConfigFrame(BasePanel):
             "Use Leaderboard to build automatic player/enemy Elo tables.\n"
             "Use Replay to browse .ler.gz files and export frame sequences."
         )
-        ttk.Label(tips, text=copy, justify="left").grid(row=0, column=0, sticky="w")
+        ttk.Label(tips, text=copy, justify="left", wraplength=980).grid(row=0, column=0, sticky="w")
 
 
 def main() -> None:
+    enable_windows_high_dpi()
     app = LauncherApp()
     app.mainloop()
 

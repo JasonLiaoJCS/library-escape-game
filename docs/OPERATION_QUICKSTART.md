@@ -467,6 +467,13 @@ python -m library_escape.gui.app
 - `Device`
 - `Algorithm`
 
+介面補充：
+
+- `Train` 頁現在是可伸縮的 responsive 版面，不是固定死的比例
+- 右側上半部是進度摘要，下半部是 `Logs`
+- `Logs` 區有水平 / 垂直捲軸，視窗縮放時不會再被壓成幾乎看不到的一條
+- Windows 高 DPI 縮放下，GUI 會先啟用 DPI awareness，150% 之類的縮放比例文字會比以前清楚
+
 ### 8.3 `Mode` 要選什麼
 
 - `enemy`：訓練敵人
@@ -606,6 +613,11 @@ auto
 
 下方 `Logs` 會顯示訓練輸出。
 
+補充：
+
+- `Logs` 現在是 monospace 顯示，長輸出可以水平捲動
+- 右側中間的分隔條可以拖動，所以你想多看 logs 時，可以直接把 logs 區拉高
+
 ### 9.3 訓練結束後模型在哪裡
 
 通常在：
@@ -742,6 +754,19 @@ checkpoints/selfplay/escape/<run_name>/
 - `tb/`
   - TensorBoard event 檔
 
+如果你是用 GUI 半途按 `Stop`：
+
+- GUI 仍會補寫一份可被 `Results` 讀懂的 `training_summary.json`
+- 所以就算沒有完整 train 完，這個 run 也還是會出現在 `Results`
+- 這種 run 的 summary 會標示 `status = stopped_early`
+
+如果你後來按了 GUI 的 `Compact Run`：
+
+- 會保留最新可回播的 checkpoint
+- 也會保留必要的 `*.meta.json`、`*.obsnorm.npz`、`vecnormalize.pkl`、`training_summary.json`
+- 額外 checkpoints、`tb/`、`monitor/`、`progress_history.jsonl`、`eval_history.jsonl` 這些大檔會被刪掉
+- 所以 compact 之後，你還是可以在 `Results` 看摘要，也還是可以拿保留下來的最新模型回播
+
 你現在也可以把 `checkpoints/_archive/` 當成「舊資料倉庫」來理解：
 
 - 以前整理前的舊 run、smoke run、舊版殘留資料都搬去那裡了
@@ -830,6 +855,8 @@ checkpoints/selfplay/escape/<run_name>/
   - 重新掃描 run
 - `Open Folder`
   - 打開你選到的 run 資料夾
+- `Compact Run`
+  - 幫你把這個 run 精簡成「保留最新可回播 checkpoint + 必要 metadata」的最小集合
 - `Evaluate`
   - 用這個 run 的最終模型做一次 quick evaluation
 - `Play AI vs AI`
@@ -1019,10 +1046,21 @@ checkpoints/selfplay/escape/<run_name>/
   - 依照目前欄位開始訓練
 - `Stop`
   - 中止目前訓練
+  - 如果這次 run 還沒正式寫出最終 summary，GUI 仍會補一份 `training_summary.json`
+  - 所以這個 run 還是能直接出現在 `Results`
+- `Compact Run`
+  - 刪掉額外 checkpoints、TensorBoard、monitor、歷史曲線大檔
+  - 只留下最新可回播 checkpoint 與必要 metadata
 - `Open Run Folder`
   - 打開目前正在訓練的 run 目錄
 - `Open TensorBoard Server`
   - 替目前這個 run 開 TensorBoard server
+
+畫面補充：
+
+- `Train` 右側現在會把進度摘要和 `Logs` 分開
+- `Logs` 會保留比較大的預設高度，並支援水平 / 垂直捲動
+- 視窗比例改變時，版面會跟著重排，不是只對某一種螢幕比例可用
 
 #### `TensorBoard` 分頁
 
@@ -1843,3 +1881,43 @@ score_value = note_count * 8 + exam_count * 12
 - Action 定義：[`library_escape/core/actions.py`](../library_escape/core/actions.py)
 - 互動遊玩規則 preset：[`library_escape/play/presets.py`](../library_escape/play/presets.py)
 - 使用者模式映射：[`library_escape/game_modes.py`](../library_escape/game_modes.py)
+
+### 22.11 2026-04-19 reward 大改版：實際生效的權重與新項目
+
+`2026-04-19` 這天把兩個模式的 reward 做了大刀闊斧的重塑，原因是訓練一整夜後出現「主敵人原地自旋、玩家被看到就左右抖動、雙方死循環」這類病態行為。
+
+**新增了四個 reward 項目（在 `configs/rewards_*.yaml` 可以直接調）：**
+
+- `enemy.chase_progress_per_unit`
+  - 敵人真的縮短與玩家的距離，就給正 reward
+- `enemy.search_move_per_unit`
+  - 看不到玩家但有移動時，給小額 reward，打破「原地自旋」的 local optimum
+- `player.goal_progress_per_unit`
+  - 玩家靠近當前目標（最近要收的書 / 解鎖後改成逃脫區）就給正 reward
+- `player.evade_progress_per_unit`
+  - 玩家被 primary 看到時，拉開距離就給 reward
+
+**另外加了一個旗標：**
+
+- `enemy.potential.use_primary_distance` 預設 `true`
+  - 把 `capture_pressure` 從「團隊最近敵人距離」改成「主敵人距離」
+  - 這樣 primary 不能再靠近支援敵人就蹭 reward
+
+**權重整體改動方向：**
+
+- Terminal reward 從 `±240` 提到 `±300`，`timeout_win` 從 `60` 降到 `30`
+  - 讓抓到/逃到明顯勝過拖時間
+- Potential 權重總和砍到約 `1/5`
+  - 讓 dense shaping 不再壓過 terminal
+- `idle_penalty` 從 `-0.016` 提到 `-0.10`（約 `6x`）
+  - 站著不動永遠是壞策略
+- `zero_sum_mix` 從 `0.30` 降到 `0.10`
+  - 避免雙方 minmax 收斂成「互相不動」
+- 反震盪懲罰（`_quiet_step`）拿掉「玩家被看到時不計」的例外
+  - 使用者觀察到的死循環，就是在對視時抖動，那個 case 現在會照常罰
+
+**完整診斷、完整新 YAML、完整設計理由**都寫在詳細手冊：
+
+- [`docs/OPERATION_GUIDE.md`](./OPERATION_GUIDE.md) 的 `## 11.10`
+
+**舊 checkpoint 建議從零重練**，因為舊 policy 已經卡在「原地自旋 / 對視抖動」這兩個 local optima，續訓要走出來很慢。

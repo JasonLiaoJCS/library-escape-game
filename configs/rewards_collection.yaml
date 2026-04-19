@@ -1,67 +1,102 @@
+# Collection-mode reward shaping.
+#
+# Collection mode has no terminal capture/escape -- the "terminal" signal is
+# the final score at timeout (player wants it high, enemy wants it low).
+# Design parallels rewards_escape.yaml: small potential weights, strong direct
+# progress signals, no freeloading on support enemies, and anti-oscillation
+# penalties that stay active during visibility.
+
 global:
   gamma: 0.99
   clip_range: 320.0
-  zero_sum_mix: 0.25
+  zero_sum_mix: 0.10
 
 enemy:
-  catch_player: 0.0
+  # --- Terminal-equivalent (score denial at timeout / stalemate) ---
+  catch_player: 0.0           # no capture mechanic in collection mode
   lose_on_escape: 0.0
-  timeout_win: 0.0
-  detection_event_bonus: 10.0
-  primary_visible_per_step: 0.20
-  support_visible_per_step: 0.08
-  team_visible_ratio_per_step: 0.07
-  player_collect_note_penalty: -18.0
-  player_collect_exam_penalty: -30.0
-  player_collect_powerup_penalty: -5.0
-  player_objective_complete_penalty: -24.0
-  timeout_score_denial_bonus: 42.0
-  stalemate_score_denial_bonus: 28.0
-  time_penalty: -0.002
-  wall_penalty: -0.10
-  idle_penalty: -0.015
-  stalemate: -12.0
+  timeout_win: 0.0            # collection mode always runs to timeout
+  stalemate: -30.0
+  # Strong end-of-episode signal: the less score the player got, the better.
+  timeout_score_denial_bonus: 120.0
+  stalemate_score_denial_bonus: 90.0
+
+  # --- Sparse events ---
+  # Classic-ruleset "detection" event gives the enemy a modest bonus and pauses
+  # the player. Keep it moderate -- it was previously 10.0 which made enemies
+  # chase detection-flip-spam instead of actual catching.
+  detection_event_bonus: 6.0
+  player_collect_note_penalty: -16.0
+  player_collect_exam_penalty: -28.0
+  player_collect_powerup_penalty: -4.0
+  player_objective_complete_penalty: -40.0
+
+  # --- Dense shaping ---
+  primary_visible_per_step: 0.40
+  support_visible_per_step: 0.02
+  team_visible_ratio_per_step: 0.02
+  chase_progress_per_unit: 0.55
+  search_move_per_unit: 0.05
+
+  # --- Soft penalties ---
+  time_penalty: -0.004
+  wall_penalty: -0.20
+  idle_penalty: -0.10
+
+  # --- Potential-based shaping (sum ~1.8) ---
   potential:
     enabled: true
-    capture_pressure: 1.35
-    team_visibility: 1.85
-    objective_denial: 3.35
-    exit_guard: 0.0
-    encirclement: 1.10
+    use_primary_distance: true
+    capture_pressure: 0.60
+    team_visibility: 0.25
+    objective_denial: 0.80
+    exit_guard: 0.0           # no escape zone to guard
+    encirclement: 0.15
 
 player:
-  collect_note: 16.0
-  collect_exam: 25.0
-  collect_coffee: 4.0
-  collect_freeze: 5.0
-  objective_complete_bonus: 28.0
-  detection_event_penalty: -10.0
+  # --- Terminal-equivalent (score progress at timeout / stalemate) ---
   escape: 0.0
   caught: 0.0
   timeout_loss: 0.0
-  timeout_score_progress_bonus: 42.0
-  stalemate_score_progress_bonus: 28.0
-  primary_seen_per_step: -0.15
-  support_seen_per_step: -0.05
-  multi_seen_penalty_per_step: -0.05
+  stalemate: -30.0
+  timeout_score_progress_bonus: 120.0
+  stalemate_score_progress_bonus: 90.0
+
+  # --- Sparse events (collection mode's true objective) ---
+  collect_note: 20.0
+  collect_exam: 34.0
+  collect_coffee: 5.0
+  collect_freeze: 6.0
+  objective_complete_bonus: 40.0
+  detection_event_penalty: -8.0
+
+  # --- Dense shaping ---
+  primary_seen_per_step: -0.25
+  support_seen_per_step: -0.08
+  multi_seen_penalty_per_step: -0.08
+  goal_progress_per_unit: 0.60   # strong pull toward next note/exam
+  evade_progress_per_unit: 0.20  # lighter in collection mode (can't be caught)
+
+  # --- Soft penalties ---
   time_penalty: -0.004
-  wall_penalty: -0.10
-  idle_penalty: -0.015
-  stalemate: -12.0
+  wall_penalty: -0.20
+  idle_penalty: -0.10
+
+  # --- Potential-based shaping (sum ~2.3) ---
   potential:
     enabled: true
-    objective_progress: 5.40
-    target_navigation: 2.40
-    escape_navigation: 0.0
-    threat_margin: 1.55
+    objective_progress: 1.00
+    target_navigation: 0.70
+    escape_navigation: 0.0     # no escape zone
+    threat_margin: 0.35
     exit_window: 0.0
 
 anti_exploit:
-  no_progress_penalty: -0.03
-  stationary_threshold: 0.075
-  oscillation_path_threshold: 0.16
-  oscillation_net_threshold: 0.04
-  player_stationary_penalty: -0.035
-  enemy_stationary_penalty: -0.030
-  player_oscillation_penalty: -0.050
-  enemy_oscillation_penalty: -0.045
+  no_progress_penalty: -0.06
+  stationary_threshold: 0.13
+  oscillation_path_threshold: 0.20
+  oscillation_net_threshold: 0.05
+  player_stationary_penalty: -0.09
+  enemy_stationary_penalty: -0.10
+  player_oscillation_penalty: -0.13
+  enemy_oscillation_penalty: -0.15

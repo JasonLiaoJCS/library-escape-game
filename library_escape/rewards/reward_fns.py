@@ -52,6 +52,16 @@ class RewardEngine:
         enemy_reward += (events.count("coffee") + events.count("freeze")) * float(enemy_cfg.get("player_collect_powerup_penalty", 0.0))
         enemy_reward += events.enemy_wall_hits * float(enemy_cfg.get("wall_penalty", 0.0))
         enemy_reward += float(enemy_cfg.get("time_penalty", 0.0))
+        # Dense chase signal: reward primary enemy for physically closing the gap to the player.
+        # Uses primary_distance_delta (positive when enemy closed the distance this macro-step).
+        enemy_reward += float(events.primary_distance_delta) * float(enemy_cfg.get("chase_progress_per_unit", 0.0))
+        # Search-mode shaping: when the player is not visible but the enemy is not idle,
+        # small positive-for-moving bonus to break "spin in place" local optima.
+        if float(events.primary_visible_steps) <= 0.0 and float(events.primary_enemy_net_displacement) > 0.0:
+            enemy_reward += (
+                float(events.primary_enemy_net_displacement)
+                * float(enemy_cfg.get("search_move_per_unit", 0.0))
+            )
         if (
             idle_threshold > 0.0
             and float(events.primary_enemy_net_displacement) < idle_threshold
@@ -89,6 +99,16 @@ class RewardEngine:
         player_reward += visible_enemy_ratio * float(player_cfg.get("multi_seen_penalty_per_step", 0.0))
         player_reward += events.player_wall_hits * float(player_cfg.get("wall_penalty", 0.0))
         player_reward += float(player_cfg.get("time_penalty", 0.0))
+        # Dense goal-progress signal: reward the player for shrinking the distance to the
+        # currently-relevant goal (nearest required collectible, or escape zone when escape is unlocked).
+        goal_progress_delta = self._goal_progress_delta(world, prev_metrics, next_metrics)
+        player_reward += goal_progress_delta * float(player_cfg.get("goal_progress_per_unit", 0.0))
+        # Evade signal: reward the player for increasing distance when currently visible to primary.
+        if float(events.primary_visible_steps) > 0.0:
+            player_reward += (
+                -float(events.primary_distance_delta)
+                * float(player_cfg.get("evade_progress_per_unit", 0.0))
+            )
         if idle_threshold > 0.0 and float(events.player_net_displacement) < idle_threshold and float(next_metrics.get("collection_progress", 0.0)) <= 1e-6:
             player_reward += float(player_cfg.get("idle_penalty", 0.0))
         if events.player_escaped:
@@ -166,7 +186,14 @@ class RewardEngine:
     def _enemy_potential(self, world, metrics: dict[str, Any]) -> float:
         config = self.reward_config["enemy"].get("potential", {})
         max_distance = max(1.0, world.max_map_distance())
-        capture_pressure = 1.0 - min(1.0, float(metrics.get("distance_agents", 0.0)) / max_distance)
+        # Use the primary enemy's own distance so the RL policy cannot freeload on
+        # rule-based support enemies being close to the player.
+        distance_source_key = (
+            "distance_primary_enemy"
+            if bool(config.get("use_primary_distance", True))
+            else "distance_agents"
+        )
+        capture_pressure = 1.0 - min(1.0, float(metrics.get(distance_source_key, 0.0)) / max_distance)
         team_visibility = (
             0.65 * float(metrics.get("player_visible_primary", 0.0))
             + 0.35 * float(metrics.get("visible_enemy_ratio", 0.0))
@@ -215,6 +242,27 @@ class RewardEngine:
         if getattr(world, "is_collection_mode", lambda: False)():
             return float(metrics.get("score_progress", metrics.get("objective_progress", 0.0)))
         return float(metrics.get("objective_progress", 0.0))
+
+    def _goal_progress_delta(
+        self,
+        world,
+        prev_metrics: dict[str, Any],
+        next_metrics: dict[str, Any],
+    ) -> float:
+        """Positive when the player shrinks the distance to the currently-relevant goal.
+
+        In escape mode, the goal flips from "nearest required collectible" to
+        "escape zone" the moment all prerequisites are collected. To avoid a huge
+        discontinuity at that flip, we select the same key on both prev and next
+        based on the *next* metrics' can_escape flag.
+        """
+        if float(next_metrics.get("can_escape", 0.0)) > 0.5 and getattr(world, "is_escape_mode", lambda: False)():
+            key = "distance_player_to_escape"
+        else:
+            key = "distance_player_to_target"
+        prev_distance = float(prev_metrics.get(key, 0.0))
+        next_distance = float(next_metrics.get(key, 0.0))
+        return prev_distance - next_distance
 
     def _stationary_penalty(
         self,
@@ -269,15 +317,19 @@ class RewardEngine:
         return float(anti_exploit_cfg.get(f"{role}_oscillation_penalty", 0.0))
 
     def _quiet_step(self, *, role: str, world, events, next_metrics: dict[str, Any]) -> bool:
+        # Note: we deliberately do NOT exempt visible_steps anymore. The worst pathology
+        # observed was player/enemy oscillating while the player is in line of sight —
+        # exempting visible_steps makes this invisible to the anti-exploit filter.
         if events.player_caught or events.player_escaped or events.objective_completed:
-            return False
-        if events.detection_events > 0 or events.visible_steps > 0:
             return False
         if sum(events.collected.values()) > 0:
             return False
         if float(next_metrics.get("collection_progress", 0.0)) > 1e-6:
             return False
         if role == "enemy" and world.enemy_pause_fraction(world.enemy) > 1e-6:
+            return False
+        # Active detection trigger (classic/collection ruleset) is still a legitimate event.
+        if events.detection_events > 0:
             return False
         return True
 

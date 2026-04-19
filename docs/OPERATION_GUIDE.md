@@ -196,6 +196,10 @@ GUI 現在可以做這些事：
 - 建 Elo leaderboard
 - 瀏覽 replay
 - 匯出 replay frames
+- 在 `Train` 頁用 responsive 版面看進度與 logs
+- 在 Windows 高 DPI 縮放下用比較清楚的字體顯示
+- 中途停止訓練後，仍替該 run 生成可被 `Results` 讀取的 summary
+- 一鍵把訓練 run 精簡成只保留最新可回播 checkpoint 的最小集合
 
 GUI 主檔：
 
@@ -645,6 +649,7 @@ GUI 主檔：
 
 - `Start Training`
 - `Stop`
+- `Compact Run`
 - `Open Run Folder`
 - `Open TensorBoard Server`
 
@@ -654,6 +659,8 @@ GUI 主檔：
 - `Mode` 決定你訓練的是 `enemy` / `player` / `selfplay`
 - `Game mode` 決定你是在 `Collection` 還是 `Escape` 規則下訓練
 - `Run dir` 會直接顯示目前這個訓練 run 的實際輸出位置
+- 右側監控區現在是 responsive 版面：上半部是進度摘要，下半部是 `Logs`
+- `Logs` 使用 monospace 顯示，並支援水平 / 垂直捲動；視窗大小改變時不會再被固定壓成幾乎看不到的一條
 - `Resume checkpoint (optional)`
   - 給 `enemy` / `player` 單訓用
   - 直接選舊的 `.zip` checkpoint，新的訓練會從那個 policy 接著練
@@ -662,6 +669,15 @@ GUI 主檔：
   - 直接選舊的 self-play run 資料夾
   - 系統會從那個 run 的 `training_summary.json` 自動讀出 `final_enemy_model` 和 `final_player_model`
   - 新的 self-play run 會從那兩個最終 policy 接著訓練
+- `Stop`
+  - 會要求目前訓練結束
+  - 如果 run 尚未寫出正式最終 summary，GUI 仍會補一份 `training_summary.json`
+  - 所以該 run 仍然能在 `Results` 頁被掃描到
+  - 這種 run 的 summary 會標記 `status = stopped_early`
+- `Compact Run`
+  - 會保留最新可回播 checkpoint 與必要 metadata
+  - 額外 checkpoints、TensorBoard event、monitor CSV、歷史曲線 JSONL 會被刪掉
+  - 目的不是保留完整訓練痕跡，而是保留「能回播、能在 Results 看摘要」的最小檔案集合
 
 ### 7.3 Results
 
@@ -671,6 +687,7 @@ GUI 主檔：
 - 看 `training_summary.json`
 - 看 training / eval 曲線
 - 開 run 資料夾
+- 精簡 run
 - 啟動 AI vs AI
 - 啟動 TensorBoard server
 
@@ -679,6 +696,8 @@ GUI 主檔：
 - `Results` 不是手動選模型，而是先選一個已經存在的訓練 run
 - 它會從該 run 的 `training_summary.json` 自動帶出模式、演算法、摘要與曲線
 - `Play AI vs AI` 會自動用該 run 的最終模型啟動對戰
+- 如果該 run 是中途按 `Stop` 停掉的，只要 GUI 已經補寫 summary，它一樣會出現在 `Results`
+- `Compact Run` 可以直接從 `Results` 把這個 run 精簡成只保留最新 playable checkpoint 與必要 metadata
 
 補充：
 
@@ -1380,6 +1399,9 @@ Phi_player =
 
 - [`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
 
+> **注意**：下面這個 YAML 區塊是 `2026-04-19` 重塑**之前**的舊版本，保留作歷史參考。
+> 目前實際生效的 Collection reward 權重與設計理由請看 `11.10.6`。
+
 ```yaml
 global:
   gamma: 0.99
@@ -1464,6 +1486,9 @@ anti_exploit:
 來源：
 
 - [`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
+
+> **注意**：下面這個 YAML 區塊是 `2026-04-19` 重塑**之前**的舊版本，保留作歷史參考。
+> 目前實際生效的 Escape reward 權重與設計理由請看 `11.10.5`。
 
 ```yaml
 global:
@@ -1627,6 +1652,267 @@ reward = clamp(reward, -clip_range, clip_range)
 - Escape：平均 `10.8` 分，`5` 次 `caught`、`5` 次 `time_expired`
 
 這不是正式 benchmark，也不是訓練後的最終強度；它只是用來確認兩個模式目前不會一邊完全碾壓另一邊，並且 Escape 會同時出現「被抓到」與「拖到超時」兩種失敗型態，而不是單一崩壞模式。
+
+### 11.10 2026-04-19 reward 大刀闊斧重塑
+
+這一節記錄 `2026-04-19` 這次對 reward 的大改版，包括：
+
+- 為什麼要重塑
+- 診斷出的四個根因
+- 新增的 reward 項目
+- `reward_fns.py` 改了什麼
+- 新的 Collection / Escape 權重
+
+前面 `11.5` / `11.6` 兩個小節的 YAML 區塊保留作歷史版本參考；目前實際生效的權重請以本節 (`11.10`) 與兩份 config 檔為準。
+
+#### 11.10.1 為什麼要重塑：觀察到的病態行為
+
+在 `2026-04-19` 之前訓練一整夜的 Escape 模型，實際播放時出現下列典型崩壞：
+
+- 主敵人（`enemy_0`，RL 控制的 primary）幾乎不移動，只在原地瘋狂改變朝向，像是在「原地自旋」。
+- 支援敵人（rule-based A\*）一開始會靠近玩家，但到玩家附近後只會在玩家側邊做上下抽動，沒有真的「看到」玩家。
+- 玩家在遇到敵人時只會左右左右左右地抖動，沒有去拿書、也沒有往逃脫區走。
+- 最後整盤停滯在「雙方互相抖動」的死循環裡。
+
+Collection 模式同樣會有類似的消極症狀：敵人偏好靠在支援敵人旁邊蹭 team visibility，玩家會一直在目標旁邊猶豫不決。
+
+#### 11.10.2 診斷出的四個根因
+
+1. **主敵人會「吃白飯」（freeloading）**
+   - 舊 `_enemy_potential` 的 `capture_pressure` / `team_visibility` / `exit_guard` / `encirclement` 全部是「團隊級」指標，尤其 `capture_pressure` 用的是 `distance_agents`（團隊中最近敵人到玩家的距離）。
+   - 因為支援敵人是 rule-based A\*，已經會主動靠近玩家 → primary 完全不動也能領到這些 potential 的 reward。
+   - 所以主敵人最佳策略會收斂到「站著不動」。
+
+2. **Potential shaping 的總量壓過 terminal reward**
+   - 舊 Escape enemy potential 權重總和 `3.00 + 1.85 + 2.00 + 3.40 + 2.05 = 12.30`。
+   - 一局 `≈240` macro-step，累積 dense shaping 很容易超過 `±240` 的 terminal reward。
+   - 代表 policy 會學到「盡量把 shaping 拉滿，避免讓局結束」，而不是真的去抓人 / 真的去逃。
+
+3. **反震盪懲罰在最關鍵的時刻被關掉**
+   - 舊的 `_quiet_step()` 只要 `visible_steps > 0` 就直接 `return False`，等於「一旦玩家被看到，oscillation / stationary penalty 都停用」。
+   - 但使用者觀察到的死循環，就是在玩家被看到時兩邊對視抖動 → 等於 exploit 走到哪裡、reward 機制就睜一隻眼閉一隻眼。
+
+4. **缺少「實際縮短距離」的 dense 正回饋**
+   - `events.primary_distance_delta` 早就有計算，但 reward engine 從來沒用它。
+   - 於是 primary 沒有任何「物理靠近玩家」的直接 shaping；只能靠 potential delta，而 potential delta 已經被第 1 點破壞了。
+
+#### 11.10.3 新增的 reward 項目
+
+在 [`library_escape/rewards/reward_fns.py`](../library_escape/rewards/reward_fns.py) 增加了四個 reward 項目：
+
+| YAML key | 對象 | 觸發條件 | 用意 |
+| --- | --- | --- | --- |
+| `enemy.chase_progress_per_unit` | 敵人 | 每一 macro-step，按 `events.primary_distance_delta` 線性給分 | primary 真的縮短與玩家的距離才有 reward，解決第 4 點 |
+| `enemy.search_move_per_unit` | 敵人 | 看不到玩家，但這一步有移動 | 給一點「動起來」的誘因，打破「原地自旋」local optimum |
+| `player.goal_progress_per_unit` | 玩家 | 每一 macro-step，按玩家「到當前目標」的距離差給分 | 目標會自動在「最近必收道具」與「逃脫區」之間切換（依 `can_escape`） |
+| `player.evade_progress_per_unit` | 玩家 | 被 primary 看到且拉開距離 | 給明確的躲避誘因，減少「被盯住還原地抖動」 |
+
+另外在 `enemy.potential` 新增了一個旗標：
+
+| YAML key | 預設 | 作用 |
+| --- | --- | --- |
+| `enemy.potential.use_primary_distance` | `true` | `capture_pressure` 用 `distance_primary_enemy` 取代 `distance_agents`，擋掉 primary 吃支援敵人便車的 freeloading |
+
+#### 11.10.4 `reward_fns.py` 的行為改動
+
+- `_enemy_potential()` 會依 `use_primary_distance` 決定 `capture_pressure` 用「primary 到玩家」還是「團隊最近敵人到玩家」。預設切到 primary，從根上堵死 freeloading 的 exploit。
+- `_quiet_step()` 拿掉 `visible_steps > 0` 例外。也就是說：即使玩家正被看到，只要符合「小位移 + 高路徑長 / 低淨位移」，還是會照常吃 oscillation / stationary penalty。真正排除的只剩三件事：
+  - 該局以 `caught` / `escaped` / `objective_completed` 結束（terminal 事件不該被誤判成抖動）
+  - 這一步有收到道具 / `collection_progress > 0`（正在收書，站著是合法的）
+  - 該敵人處於 `detection_pause`（遊戲規則強制停住）
+- `_goal_progress_delta()` 會依照 `next_metrics.can_escape` 決定鎖的 key，避免玩家剛好在「解鎖逃脫」那一瞬間因為 key 從 `distance_player_to_target` 切到 `distance_player_to_escape` 而出現巨大跳點。
+
+#### 11.10.5 新的 Escape 權重
+
+檔案：[`configs/rewards_escape.yaml`](../configs/rewards_escape.yaml)
+
+設計原則：
+
+- Terminal dominate：`catch_player` / `escape` 都是 `±300`，`timeout_win` / `timeout_loss` 只剩 `±30`，stalling 明顯比抓到 / 逃到差。
+- Potential 權重總和從 `12.30` 砍到約 `2.1`（enemy）/ `3.0`（player），讓 `Σ potential_delta` 不再壓過 terminal。
+- `support_visible_per_step` 從 `0.08` 降到 `0.02`，`team_visible_ratio_per_step` 同理。Primary 想領可見度 reward，就要自己看到玩家。
+- `idle_penalty` 從 `-0.016` 提高到 `-0.10`（約 `6x`）。站著不動永遠是壞策略。
+- `zero_sum_mix` 從 `0.30` 降到 `0.10`。大幅 zero-sum 在這種不平衡對抗（3 支援敵人 vs 1 玩家）容易收斂到「互相不動」的 minmax 平衡。
+
+```yaml
+global:
+  gamma: 0.99
+  clip_range: 320.0
+  zero_sum_mix: 0.10
+
+enemy:
+  catch_player: 300.0
+  lose_on_escape: -300.0
+  timeout_win: 30.0
+  stalemate: -60.0
+  detection_event_bonus: 0.0
+  player_collect_note_penalty: -14.0
+  player_collect_exam_penalty: -4.0
+  player_collect_powerup_penalty: -4.0
+  player_objective_complete_penalty: -60.0
+  primary_visible_per_step: 0.35
+  support_visible_per_step: 0.02
+  team_visible_ratio_per_step: 0.02
+  chase_progress_per_unit: 0.60    # 新增
+  search_move_per_unit: 0.05       # 新增
+  time_penalty: -0.015
+  wall_penalty: -0.20
+  idle_penalty: -0.10
+  timeout_score_denial_bonus: 0.0
+  stalemate_score_denial_bonus: 0.0
+  potential:
+    enabled: true
+    use_primary_distance: true     # 新增：擋 freeloading
+    capture_pressure: 0.80
+    team_visibility: 0.20
+    objective_denial: 0.50
+    exit_guard: 0.50
+    encirclement: 0.10
+
+player:
+  escape: 300.0
+  caught: -300.0
+  timeout_loss: -30.0
+  stalemate: -60.0
+  collect_note: 28.0
+  collect_exam: 8.0
+  collect_coffee: 6.0
+  collect_freeze: 10.0
+  objective_complete_bonus: 70.0
+  detection_event_penalty: 0.0
+  primary_seen_per_step: -0.30
+  support_seen_per_step: -0.08
+  multi_seen_penalty_per_step: -0.08
+  goal_progress_per_unit: 0.55     # 新增
+  evade_progress_per_unit: 0.25    # 新增
+  time_penalty: -0.008
+  wall_penalty: -0.20
+  idle_penalty: -0.10
+  timeout_score_progress_bonus: 0.0
+  stalemate_score_progress_bonus: 0.0
+  potential:
+    enabled: true
+    objective_progress: 0.80
+    target_navigation: 0.50
+    escape_navigation: 0.90
+    threat_margin: 0.30
+    exit_window: 0.50
+
+anti_exploit:
+  no_progress_penalty: -0.08
+  stationary_threshold: 0.14
+  oscillation_path_threshold: 0.22
+  oscillation_net_threshold: 0.05
+  player_stationary_penalty: -0.10
+  enemy_stationary_penalty: -0.12
+  player_oscillation_penalty: -0.15
+  enemy_oscillation_penalty: -0.18
+```
+
+#### 11.10.6 新的 Collection 權重
+
+檔案：[`configs/rewards_collection.yaml`](../configs/rewards_collection.yaml)
+
+設計原則（與 Escape 呼應，但改以 `timeout_score_*_bonus` 作為 terminal-equivalent）：
+
+- Collection 沒有真正 terminal，所以在 `timeout` / `stalemate` 發放 `±120` / `±90` 當作最終結果信號。
+- 同樣新增 `chase_progress_per_unit` / `search_move_per_unit`（敵人）與 `goal_progress_per_unit` / `evade_progress_per_unit`（玩家）。
+- Potential 權重砍輕、primary `use_primary_distance: true` 同樣啟用。
+- `detection_event_bonus` 從 `10.0` 降到 `6.0`，避免敵人把訓練目標變成「觸發偵測事件本身」。
+
+```yaml
+global:
+  gamma: 0.99
+  clip_range: 320.0
+  zero_sum_mix: 0.10
+
+enemy:
+  catch_player: 0.0
+  lose_on_escape: 0.0
+  timeout_win: 0.0
+  stalemate: -30.0
+  timeout_score_denial_bonus: 120.0
+  stalemate_score_denial_bonus: 90.0
+  detection_event_bonus: 6.0
+  player_collect_note_penalty: -16.0
+  player_collect_exam_penalty: -28.0
+  player_collect_powerup_penalty: -4.0
+  player_objective_complete_penalty: -40.0
+  primary_visible_per_step: 0.40
+  support_visible_per_step: 0.02
+  team_visible_ratio_per_step: 0.02
+  chase_progress_per_unit: 0.55    # 新增
+  search_move_per_unit: 0.05       # 新增
+  time_penalty: -0.004
+  wall_penalty: -0.20
+  idle_penalty: -0.10
+  potential:
+    enabled: true
+    use_primary_distance: true     # 新增
+    capture_pressure: 0.60
+    team_visibility: 0.25
+    objective_denial: 0.80
+    exit_guard: 0.0
+    encirclement: 0.15
+
+player:
+  escape: 0.0
+  caught: 0.0
+  timeout_loss: 0.0
+  stalemate: -30.0
+  timeout_score_progress_bonus: 120.0
+  stalemate_score_progress_bonus: 90.0
+  collect_note: 20.0
+  collect_exam: 34.0
+  collect_coffee: 5.0
+  collect_freeze: 6.0
+  objective_complete_bonus: 40.0
+  detection_event_penalty: -8.0
+  primary_seen_per_step: -0.25
+  support_seen_per_step: -0.08
+  multi_seen_penalty_per_step: -0.08
+  goal_progress_per_unit: 0.60     # 新增
+  evade_progress_per_unit: 0.20    # 新增
+  time_penalty: -0.004
+  wall_penalty: -0.20
+  idle_penalty: -0.10
+  potential:
+    enabled: true
+    objective_progress: 1.00
+    target_navigation: 0.70
+    escape_navigation: 0.0
+    threat_margin: 0.35
+    exit_window: 0.0
+
+anti_exploit:
+  no_progress_penalty: -0.06
+  stationary_threshold: 0.13
+  oscillation_path_threshold: 0.20
+  oscillation_net_threshold: 0.05
+  player_stationary_penalty: -0.09
+  enemy_stationary_penalty: -0.10
+  player_oscillation_penalty: -0.13
+  enemy_oscillation_penalty: -0.15
+```
+
+#### 11.10.7 背後的 RL 文獻依據
+
+這次重塑對齊的做法與 `11.9` 同源，但特別加重以下幾個：
+
+- Ng / Harada / Russell 的 PBRS 理論：potential shaping 只有在 `γ · Φ(next) − Φ(prev)` 的 dense 總量**小於** terminal reward 時，policy-invariance 才能近似成立。把 potential 權重砍到 `1/5` 之後 terminal 才真的 dominate。
+- OpenAI Hide-and-Seek：獎勵要能驅動「物理上靠近、物理上離開」這些身體動作，不是只靠抽象的可見度。新增的 `chase_progress_per_unit` 與 `goal_progress_per_unit` 就是這個方向。
+- DeepMind Capture the Flag：終局事件（抓到、逃到、結算分數）必須壓過 per-step shaping，否則 policy 會收斂到「不想結束」。`timeout_win` 壓到遠小於 `catch_player` 就是為了打掉「拖時間就算贏」的 shortcut。
+- AlphaStar league / MAPPO：在多 agent 混合式 reward 中，`zero_sum_mix` 過高會造成 minmax collapse；保留一點 `0.10` 就夠了。
+
+#### 11.10.8 舊 checkpoint 要重練嗎
+
+一句話：**建議從零重練**。
+
+原因：
+
+- 新 reward 的 landscape 與舊版差很多（potential 重塑、增加四個新 term、`use_primary_distance` 把 `capture_pressure` 的定義改了）。
+- 舊 policy 已經在「站著不動 / 原地抖動」這兩個 local optima 收斂，續訓要走出來很慢；從零開始 + 新 reward + new dense shaping 反而是最快的路徑。
+- 若想續訓，可以先觀察前幾萬步 TensorBoard 上的 `idle_penalty` / `oscillation_penalty` / `chase_progress` 指標，確認不再被困在舊的策略再決定。
 
 ---
 
@@ -1923,6 +2209,23 @@ ui:
 - `*.obsnorm.npz`
 - `*.meta.json`
 
+如果你是在 GUI 中途按 `Stop`：
+
+- GUI 仍會盡量補寫 `training_summary.json`
+- 所以這個 run 不一定要完整 train 完，`Results` 也能先看得到
+
+如果你之後按了 GUI 的 `Compact Run`：
+
+- 會保留 `training_summary.json`
+- 會保留最新可回播 checkpoint
+- 也會保留該 checkpoint 需要的 `*.meta.json`、`*.obsnorm.npz`、`vecnormalize.pkl`
+- 但 `tb/`、`monitor/`、額外 checkpoints、`progress_history.jsonl`、`eval_history.jsonl` 等大檔可能會被刪掉
+
+也就是說：
+
+- compact 之後適合「保留最終可用模型 + 最小紀錄」
+- 不適合拿來保留完整訓練歷史細節
+
 ---
 
 ## 16. 訓練演算法與參數要去哪裡改
@@ -2095,6 +2398,11 @@ python -m library_escape.gui.app
 4. 選 preset
 5. 選 algorithm
 6. 按 `Start Training`
+
+補充：
+
+- 如果你中途想停，可以按 `Stop`
+- 如果這次 run 很失敗、不想留一堆大檔，可以按 `Compact Run`
 
 ### 18.2 CLI：訓練敵人
 

@@ -1,52 +1,76 @@
+# Default reward config (used when neither escape- nor collection-specific
+# file is selected). Kept in sync with rewards_escape.yaml, just slightly
+# softer to work as a generic fallback.
+
 global:
   gamma: 0.99
   clip_range: 320.0
-  zero_sum_mix: 0.20
+  zero_sum_mix: 0.10
 
 enemy:
-  catch_player: 220.0
-  lose_on_escape: -220.0
-  timeout_win: 55.0
-  primary_visible_per_step: 0.65
-  support_visible_per_step: 0.28
-  team_visible_ratio_per_step: 0.22
-  player_collect_note_penalty: -18.0
-  player_collect_exam_penalty: -8.0
-  player_collect_powerup_penalty: -6.0
-  time_penalty: -0.006
-  wall_penalty: -0.10
-  idle_penalty: -0.010
-  stalemate: -35.0
+  catch_player: 280.0
+  lose_on_escape: -280.0
+  timeout_win: 30.0
+  stalemate: -50.0
+  detection_event_bonus: 0.0
+  player_collect_note_penalty: -14.0
+  player_collect_exam_penalty: -6.0
+  player_collect_powerup_penalty: -4.0
+  player_objective_complete_penalty: -40.0
+  primary_visible_per_step: 0.35
+  support_visible_per_step: 0.02
+  team_visible_ratio_per_step: 0.02
+  chase_progress_per_unit: 0.55
+  search_move_per_unit: 0.05
+  time_penalty: -0.012
+  wall_penalty: -0.18
+  idle_penalty: -0.09
+  timeout_score_denial_bonus: 0.0
+  stalemate_score_denial_bonus: 0.0
   potential:
     enabled: true
-    capture_pressure: 3.10
-    team_visibility: 1.40
-    objective_denial: 1.15
-    exit_guard: 1.85
-    encirclement: 1.10
+    use_primary_distance: true
+    capture_pressure: 0.75
+    team_visibility: 0.20
+    objective_denial: 0.45
+    exit_guard: 0.45
+    encirclement: 0.10
 
 player:
-  collect_note: 22.0
-  collect_exam: 14.0
-  collect_coffee: 7.0
+  escape: 280.0
+  caught: -280.0
+  timeout_loss: -30.0
+  stalemate: -50.0
+  collect_note: 26.0
+  collect_exam: 8.0
+  collect_coffee: 6.0
   collect_freeze: 10.0
-  escape: 220.0
-  caught: -220.0
-  timeout_loss: -55.0
-  primary_seen_per_step: -0.55
-  support_seen_per_step: -0.24
-  multi_seen_penalty_per_step: -0.18
-  time_penalty: -0.006
-  wall_penalty: -0.10
-  idle_penalty: -0.012
-  stalemate: -35.0
+  objective_complete_bonus: 60.0
+  detection_event_penalty: 0.0
+  primary_seen_per_step: -0.28
+  support_seen_per_step: -0.08
+  multi_seen_penalty_per_step: -0.08
+  goal_progress_per_unit: 0.55
+  evade_progress_per_unit: 0.25
+  time_penalty: -0.008
+  wall_penalty: -0.18
+  idle_penalty: -0.09
+  timeout_score_progress_bonus: 0.0
+  stalemate_score_progress_bonus: 0.0
   potential:
     enabled: true
-    objective_progress: 3.10
-    target_navigation: 2.05
-    escape_navigation: 3.65
-    threat_margin: 1.25
-    exit_window: 1.55
+    objective_progress: 0.80
+    target_navigation: 0.50
+    escape_navigation: 0.90
+    threat_margin: 0.30
+    exit_window: 0.50
 
 anti_exploit:
-  no_progress_penalty: -0.02
+  no_progress_penalty: -0.06
+  stationary_threshold: 0.13
+  oscillation_path_threshold: 0.22
+  oscillation_net_threshold: 0.05
+  player_stationary_penalty: -0.09
+  enemy_stationary_penalty: -0.11
+  player_oscillation_penalty: -0.14
+  enemy_oscillation_penalty: -0.16
