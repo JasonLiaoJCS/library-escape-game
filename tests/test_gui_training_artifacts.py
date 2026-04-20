@@ -2,6 +2,7 @@ import os
 import time
 from pathlib import Path
 
+from library_escape.gui import app as gui_app
 from library_escape.gui.app import compact_training_run, read_json, write_interrupted_training_summary
 
 
@@ -95,3 +96,35 @@ def test_compact_training_run_keeps_latest_playable_artifacts_and_summary(tmp_pa
     assert saved["artifacts_compacted"] is True
     assert saved["progress_history_path"] is None
     assert saved["eval_history_path"] is None
+
+
+def test_tensorboard_wait_hint_reports_first_rollout_threshold(monkeypatch, tmp_path):
+    monkeypatch.setattr(gui_app, "inspect_scalar_data", lambda run_dir: (1, False))
+
+    hint = gui_app.tensorboard_wait_hint(
+        tmp_path,
+        progress_payload={"phase_timesteps": 31760},
+        context={
+            "algorithm": "league_maskable_ppo",
+            "train_config": {"n_envs": 16, "n_steps": 2048},
+        },
+    )
+
+    assert hint is not None
+    assert "32,768" in hint
+    assert "31,760" in hint
+    assert "1,008" in hint
+
+
+def test_resolve_effective_train_config_for_gui_applies_preset_and_overrides():
+    train_cfg = gui_app.resolve_effective_train_config_for_gui(
+        "selfplay",
+        "overnight_4090",
+        "escape",
+        {"train": {"algorithm": "league_maskable_ppo"}},
+        n_envs_override="16",
+    )
+
+    assert train_cfg["n_steps"] == 2048
+    assert train_cfg["n_envs"] == 16
+    assert train_cfg["algorithm"] == "league_maskable_ppo"

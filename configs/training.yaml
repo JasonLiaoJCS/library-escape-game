@@ -180,6 +180,81 @@ presets:
         ent_coef: 0.022
       escape:
         ent_coef: 0.025
+  overnight_4090:
+    single_agent:
+      total_timesteps: 20000000
+      n_envs: 20
+      n_steps: 2048
+      batch_size: 4096
+      eval_freq: 40960
+      checkpoint_freq: 40960
+      learning_rate_schedule:
+        type: linear
+        start: 0.00025
+        end: 0.00005
+      clip_range_schedule:
+        type: linear
+        start: 0.20
+        end: 0.10
+      ent_coef_schedule:
+        type: linear
+        start: 0.020
+        end: 0.004
+    self_play:
+      rounds: 15
+      timesteps_per_round: 600000
+      n_envs: 16
+      n_steps: 2048
+      batch_size: 4096
+      eval_freq: 32768
+      checkpoint_freq: 32768
+      opponent_pool_size: 20
+      learning_rate_schedule:
+        type: linear
+        start: 0.00025
+        end: 0.00005
+      clip_range_schedule:
+        type: linear
+        start: 0.20
+        end: 0.10
+      ent_coef_schedule:
+        type: linear
+        start: 0.020
+        end: 0.004
+      opponent_curriculum:
+        bootstrap_random_weight: 0.25
+        bootstrap_heuristic_weight: 0.75
+        latest_weight: 0.45
+        historical_weight: 0.55
+        max_history_pool: 20
+    env_overrides:
+      timing:
+        rl_frame_skip: 4
+      randomization:
+        enabled: true
+    env_overrides_by_game_mode:
+      collection:
+        enemy_team:
+          support_count: 4
+        randomization:
+          support_count_range: [3, 4]
+      escape:
+        enemy_team:
+          support_count: 2
+        randomization:
+          support_count_range: [1, 4]
+    train_overrides_by_game_mode:
+      collection:
+        ent_coef_schedule:
+          type: linear
+          start: 0.022
+          end: 0.004
+      escape:
+        ent_coef_schedule:
+          type: linear
+          start: 0.024
+          end: 0.006
+
   overnight:
     single_agent:
       total_timesteps: 2000000

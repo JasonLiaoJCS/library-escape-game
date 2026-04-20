@@ -13,16 +13,17 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+from copy import deepcopy
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from ..config import REPO_ROOT, load_training_config, resolve_repo_path
 from ..eval.registry import discover_saved_models
 from ..game_modes import game_mode_label, infer_game_mode_from_models, normalize_game_mode, read_model_game_mode
-from ..gui.tensorboard_data import load_scalar_series
+from ..gui.tensorboard_data import inspect_scalar_data, load_scalar_series
 from ..replay.io import load_replay
 from ..train.callbacks import format_seconds
-from ..train.common import timestamped_run_name, write_model_metadata, write_training_summary
+from ..train.common import deep_update, timestamped_run_name, write_model_metadata, write_training_summary
 
 try:  # pragma: no cover - optional GUI plotting dependency
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -230,6 +231,8 @@ def build_interrupted_training_summary(run_dir: Path, context: dict[str, object]
         "global_progress": progress_payload.get("global_progress"),
         "elapsed_seconds": progress_payload.get("elapsed_seconds"),
     }
+    if isinstance(context.get("train_config"), dict):
+        payload["train_config"] = context["train_config"]
     if mode == "selfplay":
         enemy_model = find_latest_playable_model(run_dir / "enemy", "enemy")
         player_model = find_latest_playable_model(run_dir / "player", "player")
@@ -357,6 +360,102 @@ def checkpoint_root_for_mode(mode: str, game_mode: str) -> Path:
     if mode == "player":
         return resolve_repo_path(training_cfg["single_agent"]["player_checkpoint_dir"]) / normalize_game_mode(game_mode)
     return resolve_repo_path(training_cfg["self_play"]["checkpoint_root_dir"]) / normalize_game_mode(game_mode)
+
+
+def resolve_effective_train_config_for_gui(
+    mode: str,
+    preset: str | None,
+    game_mode: str,
+    overrides: dict[str, object] | None = None,
+    *,
+    n_envs_override: str | None = None,
+    timesteps_override: str | None = None,
+    rounds_override: str | None = None,
+) -> dict[str, object]:
+    training_cfg = load_training_config()
+    section_key = "self_play" if mode == "selfplay" else "single_agent"
+    train_cfg = deepcopy(training_cfg.get(section_key, {}))
+    preset_cfg = training_cfg.get("presets", {}).get(preset or "", {})
+    train_cfg = deep_update(train_cfg, preset_cfg.get(section_key, {}))
+    train_cfg = deep_update(
+        train_cfg,
+        preset_cfg.get("train_overrides_by_game_mode", {}).get(normalize_game_mode(game_mode), {}),
+    )
+    if overrides and isinstance(overrides.get("train"), dict):
+        train_cfg = deep_update(train_cfg, overrides["train"])
+    if n_envs_override:
+        train_cfg["n_envs"] = int(n_envs_override)
+    if timesteps_override:
+        key = "timesteps_per_round" if mode == "selfplay" else "total_timesteps"
+        train_cfg[key] = int(timesteps_override)
+    if mode == "selfplay" and rounds_override:
+        train_cfg["rounds"] = int(rounds_override)
+    return train_cfg
+
+
+def expected_tensorboard_first_dump_step(
+    *,
+    summary: dict | None = None,
+    context: dict[str, object] | None = None,
+) -> int | None:
+    train_cfg = None
+    if summary and isinstance(summary.get("train_config"), dict):
+        train_cfg = summary["train_config"]
+    elif context and isinstance(context.get("train_config"), dict):
+        train_cfg = context["train_config"]
+    if not isinstance(train_cfg, dict):
+        return None
+
+    algorithm = str(
+        (summary or {}).get("algorithm")
+        or (context or {}).get("algorithm")
+        or train_cfg.get("algorithm", "")
+    ).lower()
+    if "ppo" not in algorithm:
+        return None
+    try:
+        n_envs = int(train_cfg.get("n_envs", 0))
+        n_steps = int(train_cfg.get("n_steps", 0))
+    except (TypeError, ValueError):
+        return None
+    if n_envs <= 0 or n_steps <= 0:
+        return None
+    return n_envs * n_steps
+
+
+def tensorboard_wait_hint(
+    run_dir: Path,
+    *,
+    summary: dict | None = None,
+    progress_payload: dict | None = None,
+    context: dict[str, object] | None = None,
+) -> str | None:
+    event_file_count, has_scalar_data = inspect_scalar_data(run_dir)
+    if event_file_count <= 0:
+        return "TensorBoard started, but this run has not written any event files yet."
+    if has_scalar_data:
+        return None
+
+    first_dump_step = expected_tensorboard_first_dump_step(summary=summary, context=context)
+    current_steps = 0
+    if progress_payload:
+        raw_steps = progress_payload.get("phase_timesteps", progress_payload.get("global_timesteps", 0))
+        try:
+            current_steps = int(raw_steps)
+        except (TypeError, ValueError):
+            current_steps = 0
+    if first_dump_step is not None and current_steps < first_dump_step:
+        remaining = first_dump_step - current_steps
+        return (
+            "TensorBoard found event files, but no scalar data is available yet. "
+            "For PPO and MaskablePPO this is normal before the first rollout/update finishes. "
+            f"Expect the first dashboard around step {first_dump_step:,} "
+            f"(current {current_steps:,}, about {remaining:,} more)."
+        )
+    return (
+        "TensorBoard found event files, but they do not contain scalar summaries yet. "
+        "If training is still running, wait for the next rollout/update to finish and refresh the page."
+    )
 
 
 def _is_archived_checkpoint_path(path: Path) -> bool:
@@ -1141,6 +1240,15 @@ class TrainFrame(BasePanel):
 
         overrides = self._build_overrides_payload()
         cmd += ["--overrides-json", json.dumps(overrides, separators=(",", ":"), ensure_ascii=True)]
+        effective_train_cfg = resolve_effective_train_config_for_gui(
+            mode,
+            self.preset_var.get(),
+            game_mode,
+            overrides,
+            n_envs_override=self.n_envs_var.get().strip() or None,
+            timesteps_override=self.timesteps_var.get().strip() or None,
+            rounds_override=self.rounds_var.get().strip() or None,
+        )
 
         self.current_run_dir = checkpoint_root_for_mode(mode, game_mode) / run_name
         self.progress_path = self.current_run_dir / "progress.json"
@@ -1153,6 +1261,7 @@ class TrainFrame(BasePanel):
             "preset": self.preset_var.get(),
             "seed": seed,
             "resume_path": self.resume_path_var.get().strip() or None,
+            "train_config": effective_train_cfg,
         }
         return cmd
 
@@ -1278,6 +1387,16 @@ class TrainFrame(BasePanel):
         cmd = [str(python_executable()), "-m", "tensorboard.main", "--logdir", str(self.current_run_dir)]
         subprocess.Popen(cmd, cwd=str(REPO_ROOT))
         self.log_text.insert(tk.END, "\nLaunched TensorBoard server for: " + str(self.current_run_dir) + "\n")
+        summary = read_json(self.summary_path) if self.summary_path is not None else {}
+        progress_payload = read_json(self.progress_path) if self.progress_path is not None else {}
+        hint = tensorboard_wait_hint(
+            self.current_run_dir,
+            summary=summary,
+            progress_payload=progress_payload,
+            context=self.current_training_context,
+        )
+        if hint:
+            self.log_text.insert(tk.END, hint + "\n")
         self.log_text.see(tk.END)
 
 
@@ -1482,6 +1601,11 @@ class ResultsFrame(BasePanel):
         if self.selected_run_dir is None:
             return
         subprocess.Popen([str(python_executable()), "-m", "tensorboard.main", "--logdir", str(self.selected_run_dir)], cwd=str(REPO_ROOT))
+        summary = read_json(self.selected_run_dir / "training_summary.json")
+        progress_payload = read_json(self.selected_run_dir / "progress.json")
+        hint = tensorboard_wait_hint(self.selected_run_dir, summary=summary, progress_payload=progress_payload)
+        if hint:
+            messagebox.showinfo("TensorBoard status", hint)
 
     def _selected_models(self) -> tuple[str | None, str | None]:
         if self.selected_run_dir is None:

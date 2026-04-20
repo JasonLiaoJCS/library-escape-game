@@ -67,6 +67,7 @@ class World:
         self.manual_collect_required = bool(world_cfg.get("manual_collect_required", False))
         self.collection_hold_seconds = float(world_cfg.get("collection_hold_seconds", 0.0))
         self.startup_grace_seconds = float(world_cfg.get("startup_grace_seconds", 0.0))
+        self.player_max_turn_rate_deg = float(world_cfg.get("player_max_turn_rate_deg_per_sec", 0.0))
         self.coffee_effect = str(world_cfg.get("coffee_effect", "movement")).lower()
         self.coffee_collection_multiplier = float(
             world_cfg.get("coffee_collection_multiplier", world_cfg.get("coffee_speed_multiplier", 1.0))
@@ -441,6 +442,7 @@ class World:
         distance_primary = self.primary_enemy_distance()
         distance_player_to_escape = self.distance_player_to_escape()
         distance_enemy_to_escape = self.nearest_enemy_distance_to_escape()
+        distance_primary_to_escape = self._distance_enemy_to_escape(self.enemy)
         player_goal_position = self.current_player_goal_position()
         distance_primary_to_player_goal = (
             self._distance_between_positions(self.enemy.position, player_goal_position)
@@ -459,6 +461,7 @@ class World:
             "distance_player_to_powerup": self.distance_player_to_collectible_kind(("coffee", "freeze")),
             "distance_player_to_escape": distance_player_to_escape,
             "distance_enemy_to_escape": distance_enemy_to_escape,
+            "distance_primary_to_escape": distance_primary_to_escape,
             "objective_progress": self.objective_progress_fraction(),
             "score_progress": self.score_progress_fraction(),
             "collection_progress": self.collection_progress,
@@ -541,14 +544,13 @@ class World:
         if self.terminated or self.truncated:
             return events
 
-        self.last_player_action = player_action
-        self.last_enemy_action = enemy_action
-
         previous_distance = self.distance_between_agents()
         previous_primary_distance = self.primary_enemy_distance()
         player_start = self.player.position
         primary_enemy_start = self.enemy.position
         enemy_starts = {enemy.name: enemy.position for enemy in self.all_enemies()}
+        previous_player_action = self.last_player_action
+        previous_enemy_action = self.last_enemy_action
 
         self.player.coffee_timer = max(0.0, self.player.coffee_timer - dt)
         self.team_detection_cooldown_timer = max(0.0, self.team_detection_cooldown_timer - dt)
@@ -564,17 +566,49 @@ class World:
         else:
             player_speed_scale = 1.0
 
-        self.player.apply_action(player_action, speed_scale=player_speed_scale)
+        player_goal_position = self.current_player_goal_position()
+        player_goal_direction = (
+            self.steer_towards_position(self.player.position, player_goal_position)
+            if player_goal_position is not None
+            else (0.0, 0.0)
+        )
+        player_evade_direction = self._player_evade_direction()
+        player_turn_rate = self.player_max_turn_rate_deg if self.player_max_turn_rate_deg > 0.0 else None
+        events.player_turn_amount = self._action_turn_amount(previous_player_action, player_action)
+        events.player_reverse_turns = 1 if self._is_reverse_turn(previous_player_action, player_action) else 0
+        events.player_goal_alignment = self._alignment_score(player_action, player_goal_direction)
+        events.player_evade_alignment = self._alignment_score(player_action, player_evade_direction)
+        self.last_player_action = player_action
+        self.player.apply_action(
+            player_action,
+            speed_scale=player_speed_scale,
+            dt=dt,
+            max_turn_rate_deg=player_turn_rate,
+        )
         enemy_turn_rate = self.enemy_max_turn_rate_deg if self.enemy_max_turn_rate_deg > 0.0 else None
+        enemy_guard_target = self._enemy_guard_target()
+        enemy_chase_direction = self.steer_towards_position(self.enemy.position, self.player.position)
+        enemy_guard_direction = (
+            self.steer_towards_position(self.enemy.position, enemy_guard_target)
+            if enemy_guard_target is not None
+            else (0.0, 0.0)
+        )
         if self._should_pause_enemy(self.enemy, pause_for_detection=(classic_detector_before_move is self.enemy)):
-            self.enemy.apply_action((0.0, 0.0))
+            controlled_enemy_action = (0.0, 0.0)
+            self.enemy.apply_action(controlled_enemy_action)
         else:
+            controlled_enemy_action = enemy_action
             self.enemy.apply_action(
-                enemy_action,
+                controlled_enemy_action,
                 speed_scale=self._enemy_speed_scale(self.enemy, team_visible_before_move),
                 dt=dt,
                 max_turn_rate_deg=enemy_turn_rate,
             )
+        events.primary_enemy_turn_amount = self._action_turn_amount(previous_enemy_action, controlled_enemy_action)
+        events.primary_enemy_reverse_turns = 1 if self._is_reverse_turn(previous_enemy_action, controlled_enemy_action) else 0
+        events.enemy_chase_alignment = self._alignment_score(controlled_enemy_action, enemy_chase_direction)
+        events.enemy_guard_alignment = self._alignment_score(controlled_enemy_action, enemy_guard_direction)
+        self.last_enemy_action = controlled_enemy_action
         for support_enemy in self.support_enemies:
             visible_before = self._enemy_sees_player(support_enemy)
             if self._should_pause_enemy(support_enemy, pause_for_detection=(classic_detector_before_move is support_enemy)):
@@ -962,6 +996,60 @@ class World:
         if length <= 1e-8:
             return 0.0, 0.0
         return dx / length, dy / length
+
+    def _alignment_score(
+        self,
+        action: tuple[float, float],
+        guidance: tuple[float, float],
+    ) -> float:
+        ax, ay = action
+        gx, gy = guidance
+        action_length = math.hypot(ax, ay)
+        guidance_length = math.hypot(gx, gy)
+        if action_length <= 1e-8 or guidance_length <= 1e-8:
+            return 0.0
+        score = (ax * gx + ay * gy) / (action_length * guidance_length)
+        return max(-1.0, min(1.0, score))
+
+    def _action_turn_amount(
+        self,
+        previous_action: tuple[float, float],
+        current_action: tuple[float, float],
+    ) -> float:
+        px, py = previous_action
+        cx, cy = current_action
+        previous_length = math.hypot(px, py)
+        current_length = math.hypot(cx, cy)
+        if previous_length <= 1e-8 or current_length <= 1e-8:
+            return 0.0
+        dot = max(-1.0, min(1.0, (px * cx + py * cy) / (previous_length * current_length)))
+        return math.degrees(math.acos(dot))
+
+    def _is_reverse_turn(
+        self,
+        previous_action: tuple[float, float],
+        current_action: tuple[float, float],
+    ) -> bool:
+        px, py = previous_action
+        cx, cy = current_action
+        previous_length = math.hypot(px, py)
+        current_length = math.hypot(cx, cy)
+        if previous_length <= 1e-8 or current_length <= 1e-8:
+            return False
+        dot = (px * cx + py * cy) / (previous_length * current_length)
+        return dot <= -0.35
+
+    def _player_evade_direction(self) -> tuple[float, float]:
+        visible_enemies = self.visible_enemies()
+        if not visible_enemies:
+            return 0.0, 0.0
+        nearest_enemy = min(visible_enemies, key=lambda enemy: self._distance_player_to_enemy(enemy))
+        return self._vector_between_positions(nearest_enemy.position, self.player.position)
+
+    def _enemy_guard_target(self) -> tuple[float, float] | None:
+        if self.can_player_escape():
+            return self._exit_guard_position()
+        return self.current_player_goal_position()
 
     def _collect_nearby_items(self, events: StepEvents, dt: float, player_collect: bool) -> None:
         if self.manual_collect_required:

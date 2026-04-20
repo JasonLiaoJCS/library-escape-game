@@ -9,8 +9,19 @@ def test_action_mask_has_expected_shape_and_binary_values():
     env.reset(seed=5)
     mask = env.action_masks()
     assert mask.shape == (9,)
-    assert mask[0] == 1
     assert set(np.unique(mask)).issubset({0, 1})
+    assert int(mask.sum()) >= 1
+    env.close()
+
+
+def test_noop_is_masked_when_actor_can_move_freely():
+    env = LibraryEscapeEnv(controlled_agent="enemy", opponent_controller=HeuristicPlayerController())
+    env.reset(seed=11)
+    env.world.enemy.x = 6.5
+    env.world.enemy.y = 6.5
+    mask = env.action_masks()
+    assert mask[0] == 0
+    assert int(mask.sum()) >= 1
     env.close()
 
 

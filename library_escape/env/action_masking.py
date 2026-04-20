@@ -25,7 +25,8 @@ def action_mask_for_world(world, role: str) -> np.ndarray:
 
     The mask is designed for the discrete 9-action movement space. It
     invalidates movement directions that would immediately result in no motion
-    because of walls or boundaries. No-op is always left valid.
+    because of walls or boundaries. No-op is only left valid when the actor is
+    forced to idle or the player is actively collecting.
     """
 
     action_cfg = world.env_config["action"]
@@ -36,14 +37,21 @@ def action_mask_for_world(world, role: str) -> np.ndarray:
         raise ValueError(f"Unsupported role for action masking: {role}")
 
     actor = world.player if role == "player" else world.enemy
-    if role == "enemy" and world.enemy.freeze_timer > 0.0:
+    if role == "enemy" and (world.enemy.freeze_timer > 0.0 or getattr(world.enemy, "detection_pause_timer", 0.0) > 0.0):
         mask = np.zeros(len(DISCRETE_ACTIONS), dtype=np.int8)
         mask[0] = 1
         return mask
 
     speed_scale = _speed_scale_for_role(world, role)
     mask = np.zeros(len(DISCRETE_ACTIONS), dtype=np.int8)
-    mask[0] = 1
+    allow_noop = bool(action_cfg.get("allow_noop", False))
+    if role == "player":
+        if getattr(world, "collection_progress", 0.0) > 1e-6:
+            allow_noop = True
+        elif hasattr(world, "nearest_interactable_collectible") and world.nearest_interactable_collectible() is not None:
+            allow_noop = True
+    if allow_noop:
+        mask[0] = 1
 
     for action_id in sorted(DISCRETE_ACTIONS):
         if action_id == 0:

@@ -61,6 +61,7 @@ def apply_game_mode_overrides(
 
     if normalized == "collection":
         world_cfg["player_speed"] = 4.00
+        world_cfg["player_max_turn_rate_deg_per_sec"] = 780.0
         world_cfg["enemy_speed"] = 3.65
         world_cfg["startup_grace_seconds"] = 1.00
         world_cfg["require_all_notes_to_escape"] = True
@@ -72,7 +73,7 @@ def apply_game_mode_overrides(
         enemy_cfg["detect_penalty_seconds"] = 8.0
         enemy_cfg["detect_pause_seconds"] = 1.20
         enemy_cfg["chase_when_visible"] = False
-        enemy_cfg["max_turn_rate_deg_per_sec"] = 0.0
+        enemy_cfg["max_turn_rate_deg_per_sec"] = 660.0
         enemy_team_cfg["support_count"] = 4
         enemy_team_cfg["support_speed_scale"] = 1.04
         enemy_team_cfg["support_vision_range_scale"] = 1.00
@@ -86,6 +87,7 @@ def apply_game_mode_overrides(
             ui_cfg["show_exit_label"] = False
     else:
         world_cfg["player_speed"] = 4.55
+        world_cfg["player_max_turn_rate_deg_per_sec"] = 900.0
         world_cfg["enemy_speed"] = 3.55
         world_cfg["startup_grace_seconds"] = 0.75
         world_cfg["require_all_notes_to_escape"] = True
@@ -98,7 +100,7 @@ def apply_game_mode_overrides(
         enemy_cfg["detect_pause_seconds"] = 0.0
         enemy_cfg["chase_when_visible"] = True
         enemy_cfg["chase_speed_multiplier"] = 1.08
-        enemy_cfg["max_turn_rate_deg_per_sec"] = 0.0
+        enemy_cfg["max_turn_rate_deg_per_sec"] = 780.0
         enemy_team_cfg["support_count"] = 1
         enemy_team_cfg["support_speed_scale"] = 0.82
         enemy_team_cfg["support_vision_range_scale"] = 0.80

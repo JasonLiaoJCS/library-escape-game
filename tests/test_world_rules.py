@@ -392,7 +392,8 @@ def test_game_mode_defaults_reflect_latest_balance_tuning():
     assert collection_world.support_enemy_count == 4
     assert collection_world.player.base_speed == 4.0
     assert collection_world.startup_grace_seconds == 1.0
-    assert collection_world.enemy_max_turn_rate_deg == 0.0
+    assert collection_world.player_max_turn_rate_deg == 780.0
+    assert collection_world.enemy_max_turn_rate_deg == 660.0
 
     escape_env = build_play_env_config(game_mode="escape", manual_collect_required=False)
     escape_world = World(env_config=escape_env, seed=0)
@@ -400,7 +401,25 @@ def test_game_mode_defaults_reflect_latest_balance_tuning():
     assert escape_world.enemy.vision.range_cells == 5.3
     assert escape_world.player.base_speed == 4.55
     assert escape_world.startup_grace_seconds == 0.75
-    assert escape_world.enemy_max_turn_rate_deg == 0.0
+    assert escape_world.player_max_turn_rate_deg == 900.0
+    assert escape_world.enemy_max_turn_rate_deg == 780.0
+
+
+def test_turn_rate_limits_prevent_instant_90_degree_snap():
+    env_config = build_play_env_config(game_mode="escape", manual_collect_required=False)
+    world = World(env_config=env_config, seed=0)
+    world.startup_grace_timer = 0.0
+    world.player.facing_x = 1.0
+    world.player.facing_y = 0.0
+    world.enemy.facing_x = 1.0
+    world.enemy.facing_y = 0.0
+
+    world.step(player_action=(0.0, 1.0), enemy_action=(0.0, 1.0), frame_skip=1, player_collect=False)
+
+    assert 0.0 < world.player.facing_y < 1.0
+    assert 0.0 < world.player.facing_x < 1.0
+    assert 0.0 < world.enemy.facing_y < 1.0
+    assert 0.0 < world.enemy.facing_x < 1.0
 
 
 def test_escape_support_enemy_patrol_leaves_small_local_loop_to_pressure_objective():

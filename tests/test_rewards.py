@@ -284,6 +284,80 @@ def test_collection_visible_stationary_enemy_is_penalized():
     assert rewards["enemy_0"] < 0.0
 
 
+def test_navigation_alignment_rewards_encourage_moving_with_planned_route():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    metrics = world.transition_metrics()
+
+    aligned_rewards = reward_engine.compute(
+        world,
+        StepEvents(
+            progress_made=True,
+            player_net_displacement=0.12,
+            primary_enemy_net_displacement=0.12,
+            player_goal_alignment=world.rl_frame_skip,
+            player_evade_alignment=world.rl_frame_skip,
+            enemy_chase_alignment=world.rl_frame_skip,
+            enemy_guard_alignment=world.rl_frame_skip,
+        ),
+        prev_metrics=metrics,
+        next_metrics=metrics,
+    )
+    misaligned_rewards = reward_engine.compute(
+        world,
+        StepEvents(
+            progress_made=True,
+            player_net_displacement=0.12,
+            primary_enemy_net_displacement=0.12,
+            player_goal_alignment=-world.rl_frame_skip,
+            player_evade_alignment=-world.rl_frame_skip,
+            enemy_chase_alignment=-world.rl_frame_skip,
+            enemy_guard_alignment=-world.rl_frame_skip,
+        ),
+        prev_metrics=metrics,
+        next_metrics=metrics,
+    )
+
+    assert aligned_rewards["player_0"] > misaligned_rewards["player_0"]
+    assert aligned_rewards["enemy_0"] > misaligned_rewards["enemy_0"]
+
+
+def test_turn_in_place_penalty_hits_reverse_jitter():
+    env_config = build_game_mode_env_config(game_mode="escape", manual_collect_required=False, interactive=False)
+    world = World(env_config=env_config, seed=0)
+    reward_engine = RewardEngine.from_env_config(world.env_config)
+    metrics = world.transition_metrics()
+
+    calm_rewards = reward_engine.compute(
+        world,
+        StepEvents(
+            progress_made=True,
+            player_net_displacement=0.01,
+            primary_enemy_net_displacement=0.01,
+        ),
+        prev_metrics=metrics,
+        next_metrics=metrics,
+    )
+    jitter_rewards = reward_engine.compute(
+        world,
+        StepEvents(
+            progress_made=True,
+            player_net_displacement=0.01,
+            primary_enemy_net_displacement=0.01,
+            player_turn_amount=180.0,
+            primary_enemy_turn_amount=180.0,
+            player_reverse_turns=1,
+            primary_enemy_reverse_turns=1,
+        ),
+        prev_metrics=metrics,
+        next_metrics=metrics,
+    )
+
+    assert jitter_rewards["player_0"] < calm_rewards["player_0"]
+    assert jitter_rewards["enemy_0"] < calm_rewards["enemy_0"]
+
+
 def test_obs_builder_exposes_mode_flags_and_expanded_dimensions():
     collection_env = build_game_mode_env_config(game_mode="collection", manual_collect_required=False, interactive=False)
     collection_world = World(env_config=collection_env, seed=0)

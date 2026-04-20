@@ -41,6 +41,10 @@ class RewardEngine:
         score_denial = 1.0 - score_progress
         stationary_threshold = max(0.0, float(anti_exploit_cfg.get("stationary_threshold", 0.0)))
         idle_threshold = stationary_threshold * 0.75 if stationary_threshold > 0.0 else 0.0
+        player_goal_alignment = float(events.player_goal_alignment) * frame_scale
+        player_evade_alignment = float(events.player_evade_alignment) * frame_scale
+        enemy_chase_alignment = float(events.enemy_chase_alignment) * frame_scale
+        enemy_guard_alignment = float(events.enemy_guard_alignment) * frame_scale
 
         enemy_reward = 0.0
         enemy_reward += primary_visibility * float(enemy_cfg.get("primary_visible_per_step", 0.0))
@@ -55,12 +59,15 @@ class RewardEngine:
         # Dense chase signal: reward primary enemy for physically closing the gap to the player.
         # Uses primary_distance_delta (positive when enemy closed the distance this macro-step).
         enemy_reward += float(events.primary_distance_delta) * float(enemy_cfg.get("chase_progress_per_unit", 0.0))
+        enemy_reward += enemy_chase_alignment * float(enemy_cfg.get("chase_alignment_per_step", 0.0))
         if float(next_metrics.get("can_escape", 0.0)) > 0.5:
-            exit_guard_delta = float(prev_metrics.get("distance_enemy_to_escape", 0.0)) - float(next_metrics.get("distance_enemy_to_escape", 0.0))
+            exit_guard_delta = float(prev_metrics.get("distance_primary_to_escape", 0.0)) - float(next_metrics.get("distance_primary_to_escape", 0.0))
             enemy_reward += exit_guard_delta * float(enemy_cfg.get("exit_guard_progress_per_unit", 0.0))
+            enemy_reward += enemy_guard_alignment * float(enemy_cfg.get("exit_guard_alignment_per_step", 0.0))
         else:
             goal_guard_delta = float(prev_metrics.get("distance_primary_to_player_goal", 0.0)) - float(next_metrics.get("distance_primary_to_player_goal", 0.0))
             enemy_reward += goal_guard_delta * float(enemy_cfg.get("objective_guard_progress_per_unit", 0.0))
+            enemy_reward += enemy_guard_alignment * float(enemy_cfg.get("objective_guard_alignment_per_step", 0.0))
         # Search-mode shaping: when the player is not visible but the enemy is not idle,
         # small positive-for-moving bonus to break "spin in place" local optima.
         if float(events.primary_visible_steps) <= 0.0 and float(events.primary_enemy_net_displacement) > 0.0:
@@ -112,12 +119,14 @@ class RewardEngine:
         # currently-relevant goal (nearest required collectible, or escape zone when escape is unlocked).
         goal_progress_delta = self._goal_progress_delta(world, prev_metrics, next_metrics)
         player_reward += goal_progress_delta * float(player_cfg.get("goal_progress_per_unit", 0.0))
+        player_reward += player_goal_alignment * float(player_cfg.get("goal_alignment_per_step", 0.0))
         # Evade signal: reward the player for increasing distance when currently visible to primary.
         if float(events.primary_visible_steps) > 0.0:
             player_reward += (
                 -float(events.primary_distance_delta)
                 * float(player_cfg.get("evade_progress_per_unit", 0.0))
             )
+            player_reward += player_evade_alignment * float(player_cfg.get("evade_alignment_per_step", 0.0))
         if idle_threshold > 0.0 and float(events.player_net_displacement) < idle_threshold and float(next_metrics.get("collection_progress", 0.0)) <= 1e-6:
             player_reward += float(player_cfg.get("idle_penalty", 0.0))
         if events.player_escaped:
@@ -172,6 +181,20 @@ class RewardEngine:
             next_metrics=next_metrics,
             anti_exploit_cfg=anti_exploit_cfg,
         )
+        player_reward += self._turn_in_place_penalty(
+            role="player",
+            world=world,
+            events=events,
+            next_metrics=next_metrics,
+            anti_exploit_cfg=anti_exploit_cfg,
+        )
+        enemy_reward += self._turn_in_place_penalty(
+            role="enemy",
+            world=world,
+            events=events,
+            next_metrics=next_metrics,
+            anti_exploit_cfg=anti_exploit_cfg,
+        )
 
         zero_sum_mix = float(global_cfg.get("zero_sum_mix", 0.0))
         if zero_sum_mix > 0.0:
@@ -210,7 +233,7 @@ class RewardEngine:
         objective_denial = 1.0 - self._mode_aware_progress(world, metrics)
         exit_guard = 0.0
         if float(metrics.get("can_escape", 0.0)) > 0.5 or float(metrics.get("objective_progress", 0.0)) >= 0.75:
-            exit_guard = 1.0 - min(1.0, float(metrics.get("distance_enemy_to_escape", 0.0)) / max_distance)
+            exit_guard = 1.0 - min(1.0, float(metrics.get("distance_primary_to_escape", metrics.get("distance_enemy_to_escape", 0.0))) / max_distance)
         encirclement = capture_pressure * float(metrics.get("visible_enemy_ratio", 0.0))
         return (
             float(config.get("capture_pressure", 0.0)) * capture_pressure
@@ -341,10 +364,35 @@ class RewardEngine:
             return False
         return True
 
+    def _turn_in_place_penalty(
+        self,
+        *,
+        role: str,
+        world,
+        events,
+        next_metrics: dict[str, Any],
+        anti_exploit_cfg: dict[str, Any],
+    ) -> float:
+        threshold = float(anti_exploit_cfg.get("stationary_threshold", 0.0))
+        if threshold <= 0.0 or not self._quiet_step(role=role, world=world, events=events, next_metrics=next_metrics):
+            return 0.0
+        turn_amount = float(events.player_turn_amount) if role == "player" else float(events.primary_enemy_turn_amount)
+        net_displacement = float(events.player_net_displacement) if role == "player" else float(events.primary_enemy_net_displacement)
+        reverse_turns = int(events.player_reverse_turns) if role == "player" else int(events.primary_enemy_reverse_turns)
+        if turn_amount <= 1e-6 and reverse_turns <= 0:
+            return 0.0
+        if net_displacement >= (threshold * 0.85):
+            return 0.0
+        if role == "enemy" and self._enemy_guarding_exit(world, next_metrics):
+            return 0.0
+        penalty = min(1.0, turn_amount / 180.0) * float(anti_exploit_cfg.get(f"{role}_turn_in_place_penalty", 0.0))
+        penalty += reverse_turns * float(anti_exploit_cfg.get(f"{role}_reverse_turn_penalty", 0.0))
+        return penalty
+
     def _enemy_guarding_exit(self, world, next_metrics: dict[str, Any]) -> bool:
         if float(next_metrics.get("can_escape", 0.0)) <= 0.5:
             return False
-        return float(next_metrics.get("distance_enemy_to_escape", 999.0)) <= 1.25
+        return float(next_metrics.get("distance_primary_to_escape", 999.0)) <= 1.25
 
 
 def compute_rewards(

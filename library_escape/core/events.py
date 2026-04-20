@@ -21,6 +21,14 @@ class StepEvents:
     primary_enemy_path_length: float = 0.0
     player_net_displacement: float = 0.0
     primary_enemy_net_displacement: float = 0.0
+    player_turn_amount: float = 0.0
+    primary_enemy_turn_amount: float = 0.0
+    player_reverse_turns: int = 0
+    primary_enemy_reverse_turns: int = 0
+    player_goal_alignment: float = 0.0
+    player_evade_alignment: float = 0.0
+    enemy_chase_alignment: float = 0.0
+    enemy_guard_alignment: float = 0.0
     collected: Counter[str] = field(default_factory=Counter)
     objective_completed: bool = False
     player_caught: bool = False
@@ -43,6 +51,14 @@ class StepEvents:
         self.primary_enemy_path_length += other.primary_enemy_path_length
         self.player_net_displacement += other.player_net_displacement
         self.primary_enemy_net_displacement += other.primary_enemy_net_displacement
+        self.player_turn_amount += other.player_turn_amount
+        self.primary_enemy_turn_amount += other.primary_enemy_turn_amount
+        self.player_reverse_turns += other.player_reverse_turns
+        self.primary_enemy_reverse_turns += other.primary_enemy_reverse_turns
+        self.player_goal_alignment += other.player_goal_alignment
+        self.player_evade_alignment += other.player_evade_alignment
+        self.enemy_chase_alignment += other.enemy_chase_alignment
+        self.enemy_guard_alignment += other.enemy_guard_alignment
         self.collected.update(other.collected)
         self.objective_completed = self.objective_completed or other.objective_completed
         self.player_caught = self.player_caught or other.player_caught

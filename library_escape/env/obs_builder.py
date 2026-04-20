@@ -45,8 +45,9 @@ class ObsBuilder:
             nearest_ally_dx = (nearest_ally.x - enemy.x) / world.width
             nearest_ally_dy = (nearest_ally.y - enemy.y) / world.height
         collection_flag, escape_flag = self._mode_flags(world)
-        escape_dx, escape_dy = self._relative_escape_offset(world, enemy.position)
-        player_goal_dx, player_goal_dy = self._relative_player_goal_offset(world, enemy.position)
+        player_nav_dx, player_nav_dy = self._navigation_direction(world, enemy.position, player.position)
+        guard_target = world.escape_center() if world.can_player_escape() else world.current_player_goal_position()
+        guard_nav_dx, guard_nav_dy = self._navigation_direction(world, enemy.position, guard_target)
 
         features = [
             enemy.x / world.width,
@@ -78,10 +79,10 @@ class ObsBuilder:
             float(metrics.get("primary_threat_margin", 0.0)),
             collection_flag,
             escape_flag,
-            escape_dx,
-            escape_dy,
-            player_goal_dx,
-            player_goal_dy,
+            player_nav_dx,
+            player_nav_dy,
+            guard_nav_dx,
+            guard_nav_dy,
         ]
         features.extend(self._wall_rays(world, enemy.position, self.wall_rays))
         return np.asarray(features, dtype=np.float32)
@@ -110,6 +111,7 @@ class ObsBuilder:
             support_rel_x = nearest_support.x - player.x
             support_rel_y = nearest_support.y - player.y
         escape_dx, escape_dy = self._relative_escape_offset(world, player.position)
+        goal_nav_dx, goal_nav_dy = self._navigation_direction(world, player.position, world.current_player_goal_position())
         note_dx, note_dy = self._relative_collectible_offset(world, player.position, ("note",))
         exam_dx, exam_dy = self._relative_collectible_offset(world, player.position, ("exam",))
         power_dx, power_dy = self._relative_collectible_offset(world, player.position, ("coffee", "freeze"))
@@ -143,8 +145,8 @@ class ObsBuilder:
             float(metrics.get("exit_lead", 0.0)),
             player.coffee_timer / max(1.0, float(world.env_config["world"]["coffee_duration_seconds"])),
             world.max_enemy_freeze_timer() / max(1.0, float(world.env_config["world"]["freeze_duration_seconds"])),
-            float(metrics.get("support_enemy_ratio", 0.0)),
-            float(metrics.get("team_detection_cooldown", 0.0)),
+            goal_nav_dx,
+            goal_nav_dy,
             collection_flag,
             escape_flag,
             primary_rel_x / world.width,
@@ -188,6 +190,18 @@ class ObsBuilder:
     def _normalized_distance(self, world, distance: float) -> float:
         return float(distance / max(1.0, world.max_map_distance()))
 
+    def _navigation_direction(
+        self,
+        world,
+        origin: tuple[float, float],
+        target: tuple[float, float] | None,
+    ) -> tuple[float, float]:
+        if target is None:
+            return 0.0, 0.0
+        if hasattr(world, "steer_towards_position"):
+            return world.steer_towards_position(origin, target)
+        return self._vector_between_positions(origin, target)
+
     def _mode_flags(self, world) -> tuple[float, float]:
         return (
             1.0 if getattr(world, "is_collection_mode", lambda: False)() else 0.0,
@@ -230,3 +244,15 @@ class ObsBuilder:
             world.raycast_from(origin, angle_radians=angle, max_distance=self.max_ray_distance) / self.max_ray_distance
             for angle in angles
         ]
+
+    def _vector_between_positions(
+        self,
+        origin: tuple[float, float],
+        target: tuple[float, float],
+    ) -> tuple[float, float]:
+        dx = target[0] - origin[0]
+        dy = target[1] - origin[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-8:
+            return 0.0, 0.0
+        return dx / length, dy / length
