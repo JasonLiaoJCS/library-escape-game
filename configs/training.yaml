@@ -38,6 +38,17 @@ self_play:
   algorithm: league_maskable_ppo
   rounds: 5
   timesteps_per_round: 140000
+  role_timestep_multipliers:
+    enemy: 0.75
+    player: 1.45
+  adaptive_timesteps:
+    enabled: true
+    warmup_rounds: 1
+    reward_gap_scale: 300.0
+    max_enemy_adjustment: 0.25
+    max_player_adjustment: 0.35
+    min_multiplier: 0.50
+    max_multiplier: 2.25
   n_envs: 4
   learning_rate: 0.0002
   n_steps: 1024

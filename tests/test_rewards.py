@@ -242,6 +242,29 @@ def test_escape_player_obs_exposes_primary_support_and_exit_vectors():
     assert obs[35] != 0.0 or obs[36] != 0.0
 
 
+def test_player_obs_exposes_all_collectible_slots_in_both_modes():
+    for game_mode in ("collection", "escape"):
+        env_config = build_game_mode_env_config(game_mode=game_mode, manual_collect_required=False, interactive=False)
+        world = World(env_config=env_config, seed=4)
+        builder = ObsBuilder(env_config)
+        obs = builder.build(world, "player")
+        start = builder.player_collectible_slot_start()
+        slot_dim = builder._player_collectible_slot_dim()
+        slots = obs[start : start + slot_dim].reshape((-1, 3))
+
+        expected_slots = (
+            int(env_config["observation"]["player_note_slots"])
+            + int(env_config["observation"]["player_exam_slots"])
+            + int(env_config["observation"]["player_coffee_slots"])
+            + int(env_config["observation"]["player_freeze_slots"])
+        )
+        active_collectibles = sum(1 for item in world.collectibles if item.active)
+
+        assert slots.shape == (expected_slots, 3)
+        assert int(slots[:, 2].sum()) == active_collectibles
+        assert (slots[:, 0] != 0.0).any() or (slots[:, 1] != 0.0).any()
+
+
 def test_collection_enemy_reward_favors_pressuring_scoring_target():
     env_config = build_game_mode_env_config(game_mode="collection", manual_collect_required=False, interactive=False)
     world = World(env_config=env_config, seed=0)

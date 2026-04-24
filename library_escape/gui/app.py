@@ -347,9 +347,12 @@ def open_path(path: Path) -> None:
 
 
 def python_executable() -> Path:
-    venv_python = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
-    if venv_python.exists():
-        return venv_python
+    for venv_python in (
+        REPO_ROOT / ".venv" / "bin" / "python",
+        REPO_ROOT / ".venv" / "Scripts" / "python.exe",
+    ):
+        if venv_python.exists():
+            return venv_python
     return Path(sys.executable)
 
 
@@ -1011,7 +1014,7 @@ class TrainFrame(BasePanel):
         ttk.Combobox(controls, textvariable=self.preset_var, values=presets, state="readonly", width=18).grid(row=6, column=0, sticky="ew", pady=(2, 8))
         ttk.Label(controls, text="Run name").grid(row=7, column=0, sticky="w")
         ttk.Entry(controls, textvariable=self.run_name_var, width=22).grid(row=8, column=0, sticky="ew", pady=(2, 8))
-        ttk.Label(controls, text="Timesteps / round").grid(row=9, column=0, sticky="w")
+        ttk.Label(controls, text="Base timesteps / round").grid(row=9, column=0, sticky="w")
         ttk.Entry(controls, textvariable=self.timesteps_var, width=22).grid(row=10, column=0, sticky="ew", pady=(2, 8))
         ttk.Label(controls, text="Rounds (selfplay)").grid(row=11, column=0, sticky="w")
         ttk.Entry(controls, textvariable=self.rounds_var, width=22).grid(row=12, column=0, sticky="ew", pady=(2, 8))

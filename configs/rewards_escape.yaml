@@ -88,17 +88,17 @@ enemy:
 
 player:
   # --- Terminal ---
-  escape: 300.0
-  caught: -300.0
-  timeout_loss: -30.0
+  escape: 380.0
+  caught: -320.0
+  timeout_loss: -45.0
   stalemate: -80.0
 
   # --- Sparse events ---
-  collect_note: 35.0
-  collect_exam: 8.0
-  collect_coffee: 6.0
-  collect_freeze: 10.0
-  objective_complete_bonus: 80.0
+  collect_note: 48.0
+  collect_exam: 10.0
+  collect_coffee: 12.0
+  collect_freeze: 18.0
+  objective_complete_bonus: 130.0
   detection_event_penalty: 0.0
 
   # --- Dense shaping ---
@@ -109,17 +109,18 @@ player:
   support_seen_per_step: 0.0
   multi_seen_penalty_per_step: 0.0
   # Strong pull toward the current goal (nearest required note, or escape zone
-  # once all notes are collected). Tuned so one full-speed macro-step toward
-  # the goal is worth ~0.17, dominating the tiny visibility penalty.
-  goal_progress_per_unit: 1.40
-  goal_alignment_per_step: 0.34
+  # once all notes are collected). This should dominate pure evade shaping so
+  # the player learns to finish objectives under pressure instead of only
+  # fleeing.
+  goal_progress_per_unit: 1.85
+  goal_alignment_per_step: 0.44
   # Evade: reward increasing distance from the primary enemy when spotted.
-  evade_progress_per_unit: 0.60
-  evade_alignment_per_step: 0.16
+  evade_progress_per_unit: 0.35
+  evade_alignment_per_step: 0.08
 
   # --- Soft penalties ---
-  time_penalty: -0.01
-  wall_penalty: -0.15
+  time_penalty: -0.015
+  wall_penalty: -0.22
   idle_penalty: -0.30
 
   timeout_score_progress_bonus: 0.0
@@ -135,7 +136,7 @@ player:
     exit_window: 0.0
 
 anti_exploit:
-  no_progress_penalty: -0.10
+  no_progress_penalty: -0.14
   # Thresholds tuned to the real macro-step scale.
   # - A full-speed macro-step covers ~0.13-0.17 cells of path.
   # - stationary_threshold 0.05: below this, the agent essentially didn't move.
@@ -146,9 +147,9 @@ anti_exploit:
   oscillation_path_threshold: 0.08
   oscillation_net_threshold: 0.04
   # Penalties strengthened: previously they were dwarfed by visibility rewards.
-  player_stationary_penalty: -0.35
+  player_stationary_penalty: -0.42
   enemy_stationary_penalty: -0.45
-  player_oscillation_penalty: -0.50
+  player_oscillation_penalty: -0.58
   enemy_oscillation_penalty: -0.60
   player_turn_in_place_penalty: -0.28
   enemy_turn_in_place_penalty: -0.34

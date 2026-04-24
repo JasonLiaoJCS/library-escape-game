@@ -18,6 +18,11 @@ class ObsBuilder:
         self.player_enemy_rays = int(self.obs_config["player_enemy_rays"])
         self.normalize = bool(self.obs_config["normalize"])
         self.partial_observability = bool(self.obs_config["partial_observability"])
+        collectible_cfg = env_config.get("collectibles", {})
+        self.player_note_slots = int(self.obs_config.get("player_note_slots", collectible_cfg.get("notes", 0)))
+        self.player_exam_slots = int(self.obs_config.get("player_exam_slots", collectible_cfg.get("exams", 0)))
+        self.player_coffee_slots = int(self.obs_config.get("player_coffee_slots", collectible_cfg.get("coffee", 0)))
+        self.player_freeze_slots = int(self.obs_config.get("player_freeze_slots", collectible_cfg.get("freeze", 0)))
 
     def build(self, world, role: str) -> np.ndarray:
         if role == "player":
@@ -156,6 +161,10 @@ class ObsBuilder:
             escape_dx,
             escape_dy,
         ]
+        features.extend(self._collectible_slots(world, player.position, "note", self.player_note_slots))
+        features.extend(self._collectible_slots(world, player.position, "exam", self.player_exam_slots))
+        features.extend(self._collectible_slots(world, player.position, "coffee", self.player_coffee_slots))
+        features.extend(self._collectible_slots(world, player.position, "freeze", self.player_freeze_slots))
         features.extend(self._fan_rays(world, player.position, (player.facing_x, player.facing_y), self.player_enemy_rays))
         features.extend(self._wall_rays(world, player.position, self.wall_rays))
         return np.asarray(features, dtype=np.float32)
@@ -164,7 +173,35 @@ class ObsBuilder:
         return 33 + self.wall_rays
 
     def player_obs_dim(self) -> int:
-        return 37 + self.player_enemy_rays + self.wall_rays
+        return 37 + self._player_collectible_slot_dim() + self.player_enemy_rays + self.wall_rays
+
+    def _player_collectible_slot_dim(self) -> int:
+        slot_count = self.player_note_slots + self.player_exam_slots + self.player_coffee_slots + self.player_freeze_slots
+        return slot_count * 3
+
+    def player_collectible_slot_start(self) -> int:
+        return 37
+
+    def _collectible_slots(
+        self,
+        world,
+        origin: tuple[float, float],
+        kind: str,
+        slot_count: int,
+    ) -> list[float]:
+        values: list[float] = []
+        items = [item for item in world.collectibles if item.kind == kind]
+        for item in items[:slot_count]:
+            values.extend(
+                [
+                    (item.x - origin[0]) / world.width,
+                    (item.y - origin[1]) / world.height,
+                    1.0 if item.active else 0.0,
+                ]
+            )
+        missing_slots = max(0, slot_count - len(items))
+        values.extend([0.0, 0.0, 0.0] * missing_slots)
+        return values
 
     def _relative_collectible_offset(self, world, origin: tuple[float, float], kinds: tuple[str, ...]) -> tuple[float, float]:
         target = world.nearest_collectible(origin, kinds=kinds)

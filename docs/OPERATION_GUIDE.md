@@ -394,6 +394,8 @@ RL 訓練時不需要每個物理子步都讓 agent 做一次決策，不然太�
 
 - `Python 3.12`
 
+#### Windows / PowerShell
+
 先切到專案根目錄：
 
 ```powershell
@@ -408,11 +410,66 @@ py -3.12 -m venv .venv
 pip install -e ".[rl,dev]"
 ```
 
+#### Ubuntu / Linux
+
+Python 版的 GUI、play、train 是目前跨平台主線，Ubuntu 上通常不需要改 Python 程式碼。你需要準備的是：
+
+- `Python >=3.12,<3.14`
+- `venv`
+- `Tkinter`，給 GUI 使用
+- 一個可以開視窗的桌面 session
+
+如果你的 Ubuntu 內建 `python3` 還是 3.10，請先裝 Python 3.12。
+
+Ubuntu 22.04：
+
+```bash
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-tk
+```
+
+Ubuntu 24.04：
+
+```bash
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-tk
+```
+
+切到專案根目錄，建立並啟用專案內 `.venv`：
+
+```bash
+cd /home/lab_user1/Py/library-escape-game
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[rl,dev]"
+```
+
+只想玩、不需要訓練 RL 時，可以改成：
+
+```bash
+pip install -e .
+```
+
+Ubuntu 上請用 `/` 當路徑分隔符，例如：
+
+```bash
+python -m library_escape.play.human_vs_ai --game-mode escape --enemy-model checkpoints/enemy/escape/your_run/models/enemy_latest.zip
+python -m library_escape.replay.viewer --replay replays/my_session.ler.gz
+```
+
+如果 GUI 出現 `_tkinter` 錯誤，通常是少了 `python3.12-tk`。如果出現 display 相關錯誤，請從 Ubuntu 桌面環境的 Terminal 執行，或確認 `echo $DISPLAY` 有值。
+
+補充：舊版 C++ / SDL2 的 `CMakeLists.txt` 仍保留 Windows / MinGW / DLL 設定。若你要在 Ubuntu 編譯舊 C++ 版，需要另外改 CMake，並安裝 Linux SDL2 / SDL2_image / SDL2_ttf / SDL2_mixer 開發套件。若只使用 Python GUI / play / train，不需要碰 C++ 設定。
+
 ### 6.2 直接啟動 GUI
 
 最推薦：
 
-```powershell
+```bash
 python -m library_escape.gui.app
 ```
 
@@ -426,14 +483,20 @@ library-escape-gui
 
 如果你同時在別的地方也有 `.venv`，請先執行：
 
-```powershell
+```bash
 python -c "import sys; print(sys.executable)"
 ```
 
-你應該看到：
+Windows 應該看到：
 
 ```text
 C:\Users\User\Desktop\大四其他\library-escape-game\.venv\Scripts\python.exe
+```
+
+Ubuntu / Linux 應該看到：
+
+```text
+/home/lab_user1/Py/library-escape-game/.venv/bin/python
 ```
 
 如果你看到的是：
@@ -1083,6 +1146,10 @@ observation:
   type: vector
   partial_observability: true
   normalize: true
+  player_note_slots: 6
+  player_exam_slots: 2
+  player_coffee_slots: 1
+  player_freeze_slots: 1
   wall_rays: 8
   player_enemy_rays: 3
   max_ray_distance: 8.0
@@ -1199,8 +1266,8 @@ observation:
 25. `exit_lead`
 26. `coffee_timer_ratio`
 27. `max_enemy_freeze_timer_ratio`
-28. `support_enemy_ratio`
-29. `team_detection_cooldown`
+28. `goal_nav_dx`
+29. `goal_nav_dy`
 30. `collection_mode_flag`
 31. `escape_mode_flag`
 32. `relative_primary_enemy_x / world.width`
@@ -1209,17 +1276,21 @@ observation:
 35. `relative_nearest_support_y / world.height`
 36. `relative_escape_x`
 37. `relative_escape_y`
-38. `front_fan_ray[0]`
-39. `front_fan_ray[1]`
-40. `front_fan_ray[2]`
-41. `wall_rays[0]`
-42. `wall_rays[1]`
-43. `wall_rays[2]`
-44. `wall_rays[3]`
-45. `wall_rays[4]`
-46. `wall_rays[5]`
-47. `wall_rays[6]`
-48. `wall_rays[7]`
+38-55. `note_slot[i] = relative_x, relative_y, active_flag`
+56-61. `exam_slot[i] = relative_x, relative_y, active_flag`
+62-64. `coffee_slot[i] = relative_x, relative_y, active_flag`
+65-67. `freeze_slot[i] = relative_x, relative_y, active_flag`
+68. `front_fan_ray[0]`
+69. `front_fan_ray[1]`
+70. `front_fan_ray[2]`
+71. `wall_rays[0]`
+72. `wall_rays[1]`
+73. `wall_rays[2]`
+74. `wall_rays[3]`
+75. `wall_rays[4]`
+76. `wall_rays[5]`
+77. `wall_rays[6]`
+78. `wall_rays[7]`
 
 幾個重要細節：
 
@@ -1227,6 +1298,7 @@ observation:
 - 如果 `partial_observability = true` 且玩家視角下目前看不到敵人，這兩個相對座標會被寫成 `0.0`
 - 但目前兩個 mode preset 都把 `partial_observability` 覆蓋成 `false`，所以實際上玩家會直接看到最近敵人、主敵人、最近支援敵人的相對方向
 - `nearest_note / nearest_exam / nearest_powerup dx dy` 讓玩家能把主目標、加分道具與增益道具分開看
+- `note_slot` / `exam_slot` / `coffee_slot` / `freeze_slot` 會列出所有生成道具的位置與 active flag，讓玩家能學出「先拿 freeze 或 coffee 反制，再完成目標」這類策略，而不是只看最近目標
 - `objective_progress` 與 `score_progress` 分開放，讓 Collection 重點落在壓分 / 拉分，Escape 重點落在完成前置條件後衝出口
 - `collection_progress` 讓玩家知道自己是不是正在收集進度中
 - `exit_lead` 幫助玩家判斷現在是不是比敵人更有機會先到出口
@@ -1242,10 +1314,16 @@ observation:
 
 - `player_enemy_rays = 3`
 - `wall_rays = 8`
+- `player_note_slots = 6`
+- `player_exam_slots = 2`
+- `player_coffee_slots = 1`
+- `player_freeze_slots = 1`
 
 所以玩家 observation 維度預設是：
 
-- `37 + 3 + 8 = 48`
+- `37 + ((6 + 2 + 1 + 1) * 3) + 3 + 8 = 78`
+
+這次 observation 維度有變，舊 checkpoint 不建議直接續訓；請用新的 run 重新訓練，或只接續同 observation 維度的新 checkpoint。
 
 ### 10.5 你想改 observation 時怎麼做
 
@@ -1454,24 +1532,24 @@ Phi_player =
 - `potential.enabled = false`
 - `Collection` 沒有真正的 terminal `catch / escape`
 - 真正的終局主訊號是：
-  - `player.timeout_score_progress_bonus = 150.0`
+  - `player.timeout_score_progress_bonus = 190.0`
   - `enemy.timeout_score_denial_bonus = 150.0`
-  - `player.stalemate_score_progress_bonus = 120.0`
+  - `player.stalemate_score_progress_bonus = 145.0`
   - `enemy.stalemate_score_denial_bonus = 120.0`
 - 玩家主要收集事件：
-  - `collect_note = 24.0`
-  - `collect_exam = 42.0`
-  - `collect_coffee = 6.0`
-  - `collect_freeze = 8.0`
-  - `objective_complete_bonus = 55.0`
+  - `collect_note = 32.0`
+  - `collect_exam = 54.0`
+  - `collect_coffee = 10.0`
+  - `collect_freeze = 14.0`
+  - `objective_complete_bonus = 75.0`
 - 玩家主要密集 shaping：
-  - `goal_progress_per_unit = 1.30`
-  - `goal_alignment_per_step = 0.28`
-  - `evade_progress_per_unit = 0.30`
-  - `evade_alignment_per_step = 0.10`
+  - `goal_progress_per_unit = 1.60`
+  - `goal_alignment_per_step = 0.36`
+  - `evade_progress_per_unit = 0.18`
+  - `evade_alignment_per_step = 0.05`
   - `detection_event_penalty = -10.0`
   - `primary_seen_per_step = -0.04`
-  - `idle_penalty = -0.28`
+  - `idle_penalty = -0.34`
 - 敵人主要防守 shaping：
   - `player_collect_note_penalty = -18.0`
   - `player_collect_exam_penalty = -34.0`
@@ -1484,10 +1562,10 @@ Phi_player =
   - `detection_event_bonus = 10.0`
   - `idle_penalty = -0.35`
 - anti-exploit 目前重點值：
-  - `no_progress_penalty = -0.08`
-  - `player_stationary_penalty = -0.30`
+  - `no_progress_penalty = -0.12`
+  - `player_stationary_penalty = -0.38`
   - `enemy_stationary_penalty = -0.36`
-  - `player_oscillation_penalty = -0.42`
+  - `player_oscillation_penalty = -0.52`
   - `enemy_oscillation_penalty = -0.48`
   - `player_turn_in_place_penalty = -0.22`
   - `enemy_turn_in_place_penalty = -0.28`
@@ -1498,6 +1576,7 @@ Phi_player =
 
 - 玩家不是在追求「逃出去」
 - 玩家是在追求「更高分、更有效率的收集、更少被看見」
+- 玩家拿 note / exam / powerup 與朝目標推進的權重高於單純逃跑，避免學成「只躲到角落」
 - 敵人不是在追求 strict win/lose
 - 敵人是在追求「壓分、拖慢收集、維持視野壓力」
 - reward 主要對齊 `score_progress`，不是只看 required objective 是否完成
@@ -1527,22 +1606,22 @@ Phi_player =
 - `Escape` 的 terminal 主訊號目前是：
   - `enemy.catch_player = 300.0`
   - `enemy.lose_on_escape = -300.0`
-  - `player.escape = 300.0`
-  - `player.caught = -300.0`
+  - `player.escape = 380.0`
+  - `player.caught = -320.0`
   - `enemy.timeout_win = 20.0`
-  - `player.timeout_loss = -30.0`
+  - `player.timeout_loss = -45.0`
   - `enemy.stalemate = -80.0`
   - `player.stalemate = -80.0`
 - 玩家主要推進 shaping：
-  - `collect_note = 35.0`
-  - `collect_exam = 8.0`
-  - `collect_coffee = 6.0`
-  - `collect_freeze = 10.0`
-  - `objective_complete_bonus = 80.0`
-  - `goal_progress_per_unit = 1.40`
-  - `goal_alignment_per_step = 0.34`
-  - `evade_progress_per_unit = 0.60`
-  - `evade_alignment_per_step = 0.16`
+  - `collect_note = 48.0`
+  - `collect_exam = 10.0`
+  - `collect_coffee = 12.0`
+  - `collect_freeze = 18.0`
+  - `objective_complete_bonus = 130.0`
+  - `goal_progress_per_unit = 1.85`
+  - `goal_alignment_per_step = 0.44`
+  - `evade_progress_per_unit = 0.35`
+  - `evade_alignment_per_step = 0.08`
   - `idle_penalty = -0.30`
 - 敵人主要追擊 / 守點 shaping：
   - `player_collect_note_penalty = -15.0`
@@ -1557,10 +1636,10 @@ Phi_player =
   - `exit_guard_alignment_per_step = 0.24`
   - `idle_penalty = -0.40`
 - anti-exploit 目前重點值：
-  - `no_progress_penalty = -0.10`
-  - `player_stationary_penalty = -0.35`
+  - `no_progress_penalty = -0.14`
+  - `player_stationary_penalty = -0.42`
   - `enemy_stationary_penalty = -0.45`
-  - `player_oscillation_penalty = -0.50`
+  - `player_oscillation_penalty = -0.58`
   - `enemy_oscillation_penalty = -0.60`
   - `player_turn_in_place_penalty = -0.28`
   - `enemy_turn_in_place_penalty = -0.34`
@@ -1570,6 +1649,7 @@ Phi_player =
 這份 reward 的設計意圖是：
 
 - 玩家在追求真實贏局
+- 玩家拿 note、拿 powerup、完成前置條件與逃出出口的 reward 現在明顯高於單純 evade shaping
 - 敵人在追求真實守成
 - terminal outcome 非常重要
 - 但同時保留 dense shaping，讓它們學得比較快
@@ -1579,9 +1659,9 @@ Phi_player =
 
 所以你會看到：
 
-- `escape = +300.0` / `caught = -300.0`
+- `escape = +380.0` / `caught = -320.0`
 - `catch_player = +300.0` / `lose_on_escape = -300.0`
-- `timeout_win = +20.0` / `timeout_loss = -30.0`
+- `timeout_win = +20.0` / `timeout_loss = -45.0`
 - `exit_guard_progress_per_unit` / `exit_guard_alignment_per_step` 都是啟用的
 
 ### 11.7 anti-exploit / zero-sum / clipping 怎麼算
@@ -1879,23 +1959,23 @@ enemy:
     encirclement: 0.0
 
 player:
-  escape: 300.0
-  caught: -300.0
-  timeout_loss: -30.0
+  escape: 380.0
+  caught: -320.0
+  timeout_loss: -45.0
   stalemate: -80.0
-  collect_note: 35.0
-  collect_exam: 8.0
-  collect_coffee: 6.0
-  collect_freeze: 10.0
-  objective_complete_bonus: 80.0
+  collect_note: 48.0
+  collect_exam: 10.0
+  collect_coffee: 12.0
+  collect_freeze: 18.0
+  objective_complete_bonus: 130.0
   detection_event_penalty: 0.0
   primary_seen_per_step: -0.05
   support_seen_per_step: 0.0
   multi_seen_penalty_per_step: 0.0
-  goal_progress_per_unit: 1.40
-  goal_alignment_per_step: 0.34
-  evade_progress_per_unit: 0.60
-  evade_alignment_per_step: 0.16
+  goal_progress_per_unit: 1.85
+  goal_alignment_per_step: 0.44
+  evade_progress_per_unit: 0.35
+  evade_alignment_per_step: 0.08
   time_penalty: -0.01
   wall_penalty: -0.15
   idle_penalty: -0.30
@@ -2427,6 +2507,17 @@ self_play:
   algorithm: league_maskable_ppo
   rounds: 5
   timesteps_per_round: 140000
+  role_timestep_multipliers:
+    enemy: 0.75
+    player: 1.45
+  adaptive_timesteps:
+    enabled: true
+    warmup_rounds: 1
+    reward_gap_scale: 300.0
+    max_enemy_adjustment: 0.25
+    max_player_adjustment: 0.35
+    min_multiplier: 0.50
+    max_multiplier: 2.25
   n_envs: 4
   learning_rate: 0.0002
   n_steps: 1024
@@ -2454,6 +2545,8 @@ vec_normalize:
 - `algorithm`
 - `total_timesteps`
 - `timesteps_per_round`
+- `role_timestep_multipliers`
+- `adaptive_timesteps`
 - `n_envs`
 - `learning_rate`
 - `n_steps`
@@ -2609,6 +2702,20 @@ python -m library_escape.train.train_selfplay --game-mode escape
 python -m library_escape.train.train_selfplay --game-mode escape --rounds 4 --timesteps-per-round 120000
 ```
 
+現在 self-play 的 `timesteps_per_round` 是基準值。實際每輪會先套用：
+
+- `role_timestep_multipliers.enemy`
+- `role_timestep_multipliers.player`
+
+預設是 enemy `0.75x`、player `1.45x`，也就是 player phase 會更長。這是因為目前 enemy 學追擊比較快，而 player 需要更多樣本才會從「遠離敵人」進步到「保持目標推進、避免被壓到牆角」。
+
+`adaptive_timesteps.enabled: true` 時，第二輪開始會看上一輪 reward；系統會優先用 training mean reward，沒有資料時才退回 eval reward：
+
+- enemy reward 明顯高於 player：下一輪 player 更久、enemy 更短
+- player reward 明顯高於 enemy：下一輪 enemy 更久、player 稍短
+
+每次 run 的實際分配會寫到 `training_summary.json` 的 `selfplay_timestep_schedule`。
+
 ### 18.5 CLI：Maskable PPO
 
 PowerShell 版本建議這樣寫：
@@ -2660,6 +2767,8 @@ python -m library_escape.train.train_selfplay --game-mode collection --preset ba
 
 - 太小：學不起來
 - 太大：很久
+- self-play 的 `timesteps_per_round` 是基準值，實際 enemy / player phase 會再乘上 `role_timestep_multipliers`
+- 若 `adaptive_timesteps.enabled` 開著，下一輪還會依上一輪 reward 差距微調
 
 建議：
 
@@ -3307,7 +3416,7 @@ Escape 目前的重點規則是：
 
 - `events.player_escaped = True`
 - `world.outcome = "escaped"`
-- player reward 會拿到 `escape = +300.0`
+- player reward 會拿到 `escape = +380.0`
 - enemy reward 會吃到 `lose_on_escape = -300.0`
 
 #### 敵人贏
@@ -3321,7 +3430,7 @@ Escape 目前的重點規則是：
 - `events.player_caught = True`
 - `world.outcome = "caught"`
 - enemy reward 會拿到 `catch_player = +300.0`
-- player reward 會吃到 `caught = -300.0`
+- player reward 會吃到 `caught = -320.0`
 
 此外在 Escape 訓練視角裡，下面兩種也可以視為「玩家失敗、敵方達成防守」：
 

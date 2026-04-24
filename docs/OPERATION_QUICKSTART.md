@@ -70,6 +70,8 @@ python -m library_escape.gui.app
 
 請使用 `Python 3.12`。
 
+#### Windows / PowerShell
+
 先切到專案根目錄：
 
 ```powershell
@@ -82,6 +84,45 @@ cd "C:\Users\User\Desktop\大四其他\library-escape-game"
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[rl,dev]"
+```
+
+#### Ubuntu / Linux
+
+Python 版的 GUI、play、train 基本上不需要改程式碼；Ubuntu 上主要要處理的是 Python 版本、Tkinter GUI 套件，以及 Linux 路徑寫法。
+
+這個專案需要 `Python >=3.12,<3.14`。如果你的 `python3 --version` 顯示 3.10，請先裝 Python 3.12。
+
+Ubuntu 22.04：
+
+```bash
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-tk
+```
+
+Ubuntu 24.04：
+
+```bash
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-tk
+```
+
+建立專案內自己的 `.venv`：
+
+```bash
+cd /home/lab_user1/Py/library-escape-game
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[rl,dev]"
+```
+
+如果你只想玩、不打算訓練，可以改用：
+
+```bash
+pip install -e .
 ```
 
 ### 2.2 驗證有沒有安裝好
@@ -104,13 +145,26 @@ C:\Users\User\Desktop\大四其他\library-escape-game\.venv\Scripts\python.exe
 C:\Users\User\.venv\Scripts\python.exe
 ```
 
+Ubuntu / Linux 則應該看到類似：
+
+```text
+/home/lab_user1/Py/library-escape-game/.venv/bin/python
+```
+
 確認無誤後再啟動 GUI：
 
-```powershell
+```bash
 python -m library_escape.gui.app
 ```
 
 如果 GUI 可以打開，代表基本上就能用了。
+
+Ubuntu 補充：
+
+- 如果出現 `_tkinter` 錯誤，通常是少了 `python3.12-tk`
+- 如果 GUI 開不起來並出現 display 相關錯誤，請從 Ubuntu 桌面環境的 Terminal 執行，或確認 `echo $DISPLAY` 有值
+- Ubuntu 路徑請用 `/`，例如 `checkpoints/enemy/escape/run_name/models/enemy_latest.zip`
+- 舊 C++ / SDL2 版的 `CMakeLists.txt` 仍是 Windows / MinGW / DLL 設定；Ubuntu 若要編譯舊版 C++，需要另外改 CMake 與安裝 Linux SDL2 開發套件
 
 ### 2.3 你剛剛遇到過的兩個常見問題
 
@@ -1230,6 +1284,13 @@ python -m library_escape.train.train_player --game-mode collection --preset fast
 python -m library_escape.train.train_selfplay --game-mode escape --preset fast --rounds 2 --timesteps-per-round 60000 --run-name selfplay_escape_test_01
 ```
 
+補充：
+
+- `timesteps-per-round` 是 self-play 每輪的基準值，不再代表 enemy / player 各自固定等長
+- 預設會讓 player 訓練比較久、enemy 比較短，因為目前 enemy 學追擊比較快，player 學脫困與解任務比較慢
+- 第二輪開始會參考上一輪 reward；若 enemy reward 明顯高於 player，下一輪會再加長 player phase、縮短 enemy phase
+- 實際每輪分配會寫在 run 的 `training_summary.json` 裡，欄位是 `selfplay_timestep_schedule`
+
 ### 12.10 訓練敵人，用 Maskable PPO
 
 PowerShell 建議這樣寫：
@@ -1389,15 +1450,13 @@ enemy:
 
 ```yaml
 player:
-  escape: 220.0
-  collect_note: 14.0
-  primary_seen_per_step: -0.35
-  support_seen_per_step: -0.14
-  potential:
-    objective_progress: 2.20
-    target_navigation: 1.80
-    escape_navigation: 4.00
-    threat_margin: 1.00
+  escape: 380.0
+  collect_note: 48.0
+  collect_coffee: 12.0
+  collect_freeze: 18.0
+  objective_complete_bonus: 130.0
+  goal_progress_per_unit: 1.85
+  evade_progress_per_unit: 0.35
 ```
 
 ### 14.4 只想讓 Collection 模式更偏重分數與隱匿
@@ -1410,13 +1469,16 @@ player:
 
 ```yaml
 player:
-  collect_note: 14.0
-  collect_exam: 22.0
-  primary_seen_per_step: -0.40
+  collect_note: 32.0
+  collect_exam: 54.0
+  collect_coffee: 10.0
+  collect_freeze: 14.0
+  timeout_score_progress_bonus: 190.0
+  goal_progress_per_unit: 1.60
 enemy:
-  player_collect_note_penalty: -16.0
-  player_collect_exam_penalty: -26.0
-  primary_visible_per_step: 0.55
+  player_collect_note_penalty: -18.0
+  player_collect_exam_penalty: -34.0
+  objective_guard_progress_per_unit: 1.10
 ```
 
 ### 14.5 只想讓訓練更快
@@ -1430,6 +1492,8 @@ enemy:
 ```yaml
 total_timesteps
 timesteps_per_round
+role_timestep_multipliers
+adaptive_timesteps
 n_envs
 n_steps
 batch_size
@@ -1880,6 +1944,8 @@ score_value = note_count * 8 + exam_count * 12
 - Observation feature 組裝：[`library_escape/env/obs_builder.py`](../library_escape/env/obs_builder.py)
 - Action 定義：[`library_escape/core/actions.py`](../library_escape/core/actions.py)
 - 互動遊玩規則 preset：[`library_escape/play/presets.py`](../library_escape/play/presets.py)
+
+目前 player observation 會給所有生成的 `note` / `exam` / `coffee` / `freeze` 位置 slot、active flag，以及出口方向。這套 schema 同時套用在 Collection 與 Escape；如果 observation 維度改了，舊 checkpoint 不建議直接續訓。
 - 使用者模式映射：[`library_escape/game_modes.py`](../library_escape/game_modes.py)
 
 ### 22.11 2026-04-19 reward 大改版：實際生效的權重與新項目

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..agents.opponent_pool import OpponentPool, PooledController, WeightedControllerChooser
@@ -36,6 +38,18 @@ from .common import (
     write_training_summary,
 )
 from .io_utils import atomic_write_json
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseTrainingResult:
+    model_path: Path
+    training_mean_reward: float | None
+    last_mean_reward: float | None
+    best_mean_reward: float | None
+
+    @property
+    def balancing_reward(self) -> float | None:
+        return self.training_mean_reward if self.training_mean_reward is not None else self.last_mean_reward
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,6 +121,87 @@ def _make_selfplay_opponent_factory(pool: OpponentPool, fallback_factory, curric
     return _factory
 
 
+def _finite_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _base_role_timestep_multipliers(train_cfg: dict) -> tuple[float, float]:
+    role_cfg = train_cfg.get("role_timestep_multipliers", {})
+    enemy_multiplier = float(role_cfg.get("enemy", 1.0))
+    player_multiplier = float(role_cfg.get("player", 1.0))
+    return max(0.01, enemy_multiplier), max(0.01, player_multiplier)
+
+
+def _scaled_timesteps(base_timesteps: int, multiplier: float) -> int:
+    return max(1, int(math.floor((base_timesteps * multiplier) + 0.5)))
+
+
+def _round_timestep_plan(
+    train_cfg: dict,
+    *,
+    round_idx: int,
+    last_enemy_reward: float | None,
+    last_player_reward: float | None,
+) -> dict[str, object]:
+    """Choose enemy/player phase lengths for the next self-play round.
+
+    Enemy policies currently improve faster than player policies. The static
+    multipliers give the player a larger default budget; adaptive adjustment
+    then shifts additional time toward the weaker side using the previous
+    round's training reward, falling back to eval reward if no training mean
+    is available.
+    """
+
+    base_timesteps = int(train_cfg["timesteps_per_round"])
+    enemy_multiplier, player_multiplier = _base_role_timestep_multipliers(train_cfg)
+    adaptive_cfg = train_cfg.get("adaptive_timesteps", {})
+    adaptive_enabled = bool(adaptive_cfg.get("enabled", False))
+    reward_gap = None
+    adjustment = 0.0
+
+    if adaptive_enabled and last_enemy_reward is not None and last_player_reward is not None:
+        warmup_rounds = int(adaptive_cfg.get("warmup_rounds", 1))
+        if round_idx > warmup_rounds:
+            gap_scale = max(1e-6, float(adaptive_cfg.get("reward_gap_scale", 300.0)))
+            reward_gap = float(last_enemy_reward) - float(last_player_reward)
+            adjustment = _clamp(reward_gap / gap_scale, -1.0, 1.0)
+            enemy_multiplier *= 1.0 - adjustment * float(adaptive_cfg.get("max_enemy_adjustment", 0.25))
+            player_multiplier *= 1.0 + adjustment * float(adaptive_cfg.get("max_player_adjustment", 0.35))
+
+    min_multiplier = float(adaptive_cfg.get("min_multiplier", 0.01))
+    max_multiplier = float(adaptive_cfg.get("max_multiplier", 10.0))
+    enemy_multiplier = _clamp(enemy_multiplier, min_multiplier, max_multiplier)
+    player_multiplier = _clamp(player_multiplier, min_multiplier, max_multiplier)
+
+    return {
+        "round": round_idx,
+        "base_timesteps_per_round": base_timesteps,
+        "enemy_multiplier": enemy_multiplier,
+        "player_multiplier": player_multiplier,
+        "enemy_timesteps": _scaled_timesteps(base_timesteps, enemy_multiplier),
+        "player_timesteps": _scaled_timesteps(base_timesteps, player_multiplier),
+        "adaptive_enabled": adaptive_enabled,
+        "last_enemy_reward": last_enemy_reward,
+        "last_player_reward": last_player_reward,
+        "reward_gap": reward_gap,
+        "adaptive_adjustment": adjustment,
+    }
+
+
+def _base_selfplay_round_timesteps(train_cfg: dict) -> int:
+    base_timesteps = int(train_cfg["timesteps_per_round"])
+    enemy_multiplier, player_multiplier = _base_role_timestep_multipliers(train_cfg)
+    return _scaled_timesteps(base_timesteps, enemy_multiplier) + _scaled_timesteps(base_timesteps, player_multiplier)
+
+
 def _resolve_resume_selfplay_models(args: argparse.Namespace) -> tuple[Path | None, Path | None, Path | None]:
     resume_run_dir = resolve_repo_path(args.resume_run) if args.resume_run else None
     resume_enemy_model = resolve_repo_path(args.resume_enemy) if args.resume_enemy else None
@@ -148,7 +243,7 @@ def _train_phase(
     shared_progress_path: Path | None = None,
     shared_progress_history_path: Path | None = None,
     shared_eval_history_path: Path | None = None,
-) -> Path:
+) -> PhaseTrainingResult:
     from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 
     if algo_spec.model_cls is None or algo_spec.eval_callback_cls is None:
@@ -203,38 +298,36 @@ def _train_phase(
     progress_history_path = shared_progress_history_path or (phase_dir / "progress_history.jsonl")
     eval_history_path = shared_eval_history_path or (phase_dir / "eval_history.jsonl")
 
-    callbacks = CallbackList(
-        [
-            TrainingStatusCallback(
-                progress_path=progress_path,
-                history_path=progress_history_path,
-                total_timesteps=timesteps,
-                phase_name=phase_name,
-                phase_index=phase_index,
-                phase_total=phase_total,
-                global_step_offset=global_step_offset,
-                global_total_timesteps=global_total_timesteps,
-                log_interval_seconds=float(train_cfg["log_interval_seconds"]),
-            ).callback,
-            CheckpointCallback(
-                save_freq=max(int(train_cfg["checkpoint_freq"]) // n_envs, 1),
-                save_path=str(models_dir),
-                name_prefix=f"{controlled_agent}_checkpoint",
-                save_vecnormalize=bool(vecnorm_cfg.get("enabled", False)),
-            ),
-            algo_spec.eval_callback_cls(
-                eval_env=eval_env,
-                best_model_save_path=str(models_dir),
-                log_path=str(phase_dir),
-                eval_freq=max(int(train_cfg["eval_freq"]) // n_envs, 1),
-                n_eval_episodes=int(train_cfg.get("eval_episodes", 8)),
-                deterministic=True,
-                render=False,
-                callback_after_eval=EvalHistoryCallback(eval_history_path, phase_name=phase_name).callback,
-                warn=False,
-            ),
-        ]
+    status_tracker = TrainingStatusCallback(
+        progress_path=progress_path,
+        history_path=progress_history_path,
+        total_timesteps=timesteps,
+        phase_name=phase_name,
+        phase_index=phase_index,
+        phase_total=phase_total,
+        global_step_offset=global_step_offset,
+        global_total_timesteps=global_total_timesteps,
+        log_interval_seconds=float(train_cfg["log_interval_seconds"]),
     )
+    status_callback = status_tracker.callback
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(int(train_cfg["checkpoint_freq"]) // n_envs, 1),
+        save_path=str(models_dir),
+        name_prefix=f"{controlled_agent}_checkpoint",
+        save_vecnormalize=bool(vecnorm_cfg.get("enabled", False)),
+    )
+    eval_callback = algo_spec.eval_callback_cls(
+        eval_env=eval_env,
+        best_model_save_path=str(models_dir),
+        log_path=str(phase_dir),
+        eval_freq=max(int(train_cfg["eval_freq"]) // n_envs, 1),
+        n_eval_episodes=int(train_cfg.get("eval_episodes", 8)),
+        deterministic=True,
+        render=False,
+        callback_after_eval=EvalHistoryCallback(eval_history_path, phase_name=phase_name).callback,
+        warn=False,
+    )
+    callbacks = CallbackList([status_callback, checkpoint_callback, eval_callback])
 
     if resume_model_path is not None:
         model = algo_spec.model_cls.load(str(resume_model_path), env=vec_env, device=default_device(train_cfg))
@@ -271,6 +364,7 @@ def _train_phase(
     best_model_path = models_dir / "best_model.zip"
     if best_model_path.exists():
         save_vecnormalize_artifacts(vec_env, best_model_path)
+    training_mean_reward = _finite_float((status_tracker.last_payload or {}).get("mean_episode_reward"))
 
     write_training_summary(
         phase_dir / "training_summary.json",
@@ -282,6 +376,12 @@ def _train_phase(
             "run_dir": phase_dir,
             "final_model": final_path.with_suffix(".zip"),
             "best_model": best_model_path if best_model_path.exists() else None,
+            "phase_total_timesteps": timesteps,
+            "global_step_offset": global_step_offset,
+            "global_total_timesteps": global_total_timesteps,
+            "training_mean_reward": training_mean_reward,
+            "last_mean_reward": _finite_float(getattr(eval_callback, "last_mean_reward", None)),
+            "best_mean_reward": _finite_float(getattr(eval_callback, "best_mean_reward", None)),
             "env_config": env_config,
             "train_config": train_cfg,
             "seed": seed,
@@ -314,7 +414,12 @@ def _train_phase(
 
     vec_env.close()
     eval_env.close()
-    return final_path.with_suffix(".zip")
+    return PhaseTrainingResult(
+        model_path=final_path.with_suffix(".zip"),
+        training_mean_reward=training_mean_reward,
+        last_mean_reward=_finite_float(getattr(eval_callback, "last_mean_reward", None)),
+        best_mean_reward=_finite_float(getattr(eval_callback, "best_mean_reward", None)),
+    )
 
 
 def _run_external_mappo_recipe(run_dir: Path, env_config: dict, train_cfg: dict, args: argparse.Namespace) -> None:
@@ -407,9 +512,8 @@ def main() -> None:
     player_root.mkdir(parents=True, exist_ok=True)
 
     rounds = int(train_cfg["rounds"])
-    timesteps_per_round = int(train_cfg["timesteps_per_round"])
     total_phases = rounds * 2
-    global_total_timesteps = timesteps_per_round * total_phases
+    base_round_timesteps = _base_selfplay_round_timesteps(train_cfg)
     curriculum_cfg = train_cfg.get("opponent_curriculum", {})
 
     player_pool = OpponentPool(max_size=int(train_cfg["opponent_pool_size"]), seed=args.seed)
@@ -445,18 +549,41 @@ def main() -> None:
         )
 
     phase_counter = 0
+    completed_timesteps = 0
+    last_enemy_reward: float | None = None
+    last_player_reward: float | None = None
+    timestep_schedule: list[dict[str, object]] = []
     for round_idx in range(1, rounds + 1):
         round_train_cfg = apply_round_hyperparameter_schedules(
             train_cfg, round_idx=round_idx, total_rounds=rounds
         )
+        round_timestep_plan = _round_timestep_plan(
+            round_train_cfg,
+            round_idx=round_idx,
+            last_enemy_reward=last_enemy_reward,
+            last_player_reward=last_player_reward,
+        )
+        enemy_timesteps = int(round_timestep_plan["enemy_timesteps"])
+        player_timesteps = int(round_timestep_plan["player_timesteps"])
+        timestep_schedule.append(dict(round_timestep_plan))
+        remaining_rounds_after_this = max(0, rounds - round_idx)
         print(
             f"[round {round_idx}] lr={round_train_cfg.get('learning_rate')}, "
             f"clip_range={round_train_cfg.get('clip_range')}, "
             f"ent_coef={round_train_cfg.get('ent_coef')}"
         )
+        print(
+            f"[round {round_idx}] timesteps enemy={enemy_timesteps} "
+            f"(x{round_timestep_plan['enemy_multiplier']:.2f}), "
+            f"player={player_timesteps} (x{round_timestep_plan['player_multiplier']:.2f}), "
+            f"last_reward enemy={last_enemy_reward}, player={last_player_reward}"
+        )
         phase_counter += 1
         enemy_phase_dir = enemy_root / f"round_{round_idx:02d}"
-        enemy_path = _train_phase(
+        enemy_global_total = completed_timesteps + enemy_timesteps + player_timesteps + (
+            remaining_rounds_after_this * base_round_timesteps
+        )
+        enemy_result = _train_phase(
             controlled_agent="enemy",
             env_config=env_config,
             train_cfg=round_train_cfg,
@@ -465,21 +592,26 @@ def main() -> None:
             opponent_pool=player_pool,
             fallback_factory=lambda round_seed=args.seed + round_idx: _bootstrap_player_factory(round_seed, curriculum_cfg),
             seed=args.seed + round_idx,
-            timesteps=timesteps_per_round,
+            timesteps=enemy_timesteps,
             phase_name=f"enemy_round_{round_idx:02d}",
             phase_index=phase_counter,
             phase_total=total_phases,
-            global_total_timesteps=global_total_timesteps,
-            global_step_offset=(phase_counter - 1) * timesteps_per_round,
+            global_total_timesteps=enemy_global_total,
+            global_step_offset=completed_timesteps,
             resume_model_path=current_enemy_model,
             shared_progress_path=progress_path,
             shared_progress_history_path=progress_history_path,
             shared_eval_history_path=eval_history_path,
         )
-        current_enemy_model = enemy_path
+        completed_timesteps += enemy_timesteps
+        current_enemy_model = enemy_result.model_path
+        last_enemy_reward = enemy_result.balancing_reward
+        timestep_schedule[-1]["actual_enemy_training_mean_reward"] = enemy_result.training_mean_reward
+        timestep_schedule[-1]["actual_enemy_last_mean_reward"] = enemy_result.last_mean_reward
+        timestep_schedule[-1]["actual_enemy_best_mean_reward"] = enemy_result.best_mean_reward
         enemy_pool.add(
             _cached_factory(
-                lambda path=enemy_path, env_cfg=deepcopy(env_config): SB3PolicyController(
+                lambda path=enemy_result.model_path, env_cfg=deepcopy(env_config): SB3PolicyController(
                     "enemy",
                     path,
                     env_config=env_cfg,
@@ -490,7 +622,8 @@ def main() -> None:
 
         phase_counter += 1
         player_phase_dir = player_root / f"round_{round_idx:02d}"
-        player_path = _train_phase(
+        player_global_total = completed_timesteps + player_timesteps + (remaining_rounds_after_this * base_round_timesteps)
+        player_result = _train_phase(
             controlled_agent="player",
             env_config=env_config,
             train_cfg=round_train_cfg,
@@ -499,21 +632,26 @@ def main() -> None:
             opponent_pool=enemy_pool,
             fallback_factory=lambda round_seed=args.seed + 5000 + round_idx: _bootstrap_enemy_factory(round_seed, curriculum_cfg),
             seed=args.seed + 5000 + round_idx,
-            timesteps=timesteps_per_round,
+            timesteps=player_timesteps,
             phase_name=f"player_round_{round_idx:02d}",
             phase_index=phase_counter,
             phase_total=total_phases,
-            global_total_timesteps=global_total_timesteps,
-            global_step_offset=(phase_counter - 1) * timesteps_per_round,
+            global_total_timesteps=player_global_total,
+            global_step_offset=completed_timesteps,
             resume_model_path=current_player_model,
             shared_progress_path=progress_path,
             shared_progress_history_path=progress_history_path,
             shared_eval_history_path=eval_history_path,
         )
-        current_player_model = player_path
+        completed_timesteps += player_timesteps
+        current_player_model = player_result.model_path
+        last_player_reward = player_result.balancing_reward
+        timestep_schedule[-1]["actual_player_training_mean_reward"] = player_result.training_mean_reward
+        timestep_schedule[-1]["actual_player_last_mean_reward"] = player_result.last_mean_reward
+        timestep_schedule[-1]["actual_player_best_mean_reward"] = player_result.best_mean_reward
         player_pool.add(
             _cached_factory(
-                lambda path=player_path, env_cfg=deepcopy(env_config): SB3PolicyController(
+                lambda path=player_result.model_path, env_cfg=deepcopy(env_config): SB3PolicyController(
                     "player",
                     path,
                     env_config=env_cfg,
@@ -522,8 +660,8 @@ def main() -> None:
             )
         )
 
-        print(f"[round {round_idx}] enemy -> {enemy_path}")
-        print(f"[round {round_idx}] player -> {player_path}")
+        print(f"[round {round_idx}] enemy -> {enemy_result.model_path}")
+        print(f"[round {round_idx}] player -> {player_result.model_path}")
 
     write_training_summary(
         run_dir / "training_summary.json",
@@ -536,6 +674,8 @@ def main() -> None:
             "player_root": player_root,
             "final_enemy_model": current_enemy_model,
             "final_player_model": current_player_model,
+            "actual_total_timesteps": completed_timesteps,
+            "selfplay_timestep_schedule": timestep_schedule,
             "progress_path": progress_path,
             "progress_history_path": progress_history_path,
             "eval_history_path": eval_history_path,

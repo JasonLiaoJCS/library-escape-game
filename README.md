@@ -173,10 +173,10 @@ python -m library_escape.play.ai_vs_ai --game-mode escape
 
 ### 需求
 
-- Windows + PowerShell
+- Windows + PowerShell，或 Ubuntu / Linux shell
 - Python `3.12`
 
-### 建議安裝流程
+### Windows 建議安裝流程
 
 先切到專案根目錄：
 
@@ -216,6 +216,74 @@ C:\Users\User\Desktop\大四其他\library-escape-game\.venv\Scripts\python.exe
 ```text
 C:\Users\User\.venv\Scripts\python.exe
 ```
+
+### Ubuntu / Linux 建議安裝流程
+
+Python 版的 GUI / play / train 基本上不需要改程式碼；Ubuntu 上主要是要裝對 Python 版本與 GUI 相關套件。
+
+這個專案需要 `Python >=3.12,<3.14`。如果你的 Ubuntu 內建 `python3` 還是 3.10，請先安裝 Python 3.12。
+
+Ubuntu 22.04 可用：
+
+```bash
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-tk
+```
+
+Ubuntu 24.04 通常可以直接安裝：
+
+```bash
+sudo apt update
+sudo apt install python3.12 python3.12-venv python3.12-tk
+```
+
+切到專案根目錄，建立並啟用專案內 `.venv`：
+
+```bash
+cd /home/lab_user1/Py/library-escape-game
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[rl,dev]"
+```
+
+如果你只想玩，不需要訓練 RL，可以改成：
+
+```bash
+pip install -e .
+```
+
+確認你真的用到專案內的 Python：
+
+```bash
+python -c "import sys; print(sys.executable)"
+```
+
+Ubuntu 上應該看到類似：
+
+```text
+/home/lab_user1/Py/library-escape-game/.venv/bin/python
+```
+
+之後可以啟動 GUI：
+
+```bash
+python -m library_escape.gui.app
+```
+
+Ubuntu / Linux 的 checkpoint 與 replay 路徑請用 `/`，例如：
+
+```bash
+python -m library_escape.play.human_vs_ai --game-mode escape --enemy-model checkpoints/enemy/escape/your_run/models/enemy_latest.zip
+python -m library_escape.replay.viewer --replay replays/demo_escape.ler.gz
+```
+
+如果 GUI 出現 `_tkinter` 相關錯誤，通常是少了 `python3.12-tk`。如果出現 display 相關錯誤，請從 Ubuntu 桌面環境的 Terminal 執行，或確認 `echo $DISPLAY` 有值。
+
+注意：新版 Python 版是跨平台主線；舊版 C++ / SDL2 的 `CMakeLists.txt` 仍保留 Windows / MinGW / DLL 設定。若要在 Ubuntu 編譯舊 C++ 版，需要另外改 CMake 與安裝 Linux SDL2 開發套件。
 
 ---
 
@@ -328,6 +396,8 @@ python -m library_escape.train.train_player --game-mode escape --preset balanced
 python -m library_escape.train.train_selfplay --game-mode collection --preset fast --run-name selfplay_collection_v1
 python -m library_escape.train.train_selfplay --game-mode escape --preset balanced --run-name selfplay_escape_v1
 ```
+
+Self-play 目前不是 enemy / player 等長訓練。`timesteps_per_round` 是每輪的基準值，實際每輪會預設給 player 較多 steps、enemy 較少 steps，並用上一輪 reward 差距自動把更多訓練時間分給弱勢方。每個 run 的實際分配會寫進 `training_summary.json` 的 `selfplay_timestep_schedule`。
 
 ### 9.4 常用訓練參數
 
@@ -481,6 +551,8 @@ python -m library_escape.gui.app
 - [`library_escape/env/single_agent_env.py`](./library_escape/env/single_agent_env.py)
 - [`library_escape/env/multi_agent_env.py`](./library_escape/env/multi_agent_env.py)
 - [`library_escape/env/action_masking.py`](./library_escape/env/action_masking.py)
+
+玩家 observation 會包含所有生成的 `note` / `exam` / `coffee` / `freeze` slot，以及出口方向；Collection 與 Escape 都使用同一套擴充後的 observation schema。這讓 player 有足夠資訊自己學出「拿道具、反制敵人、完成目標」的策略，而不是只靠逃跑。
 
 ### 訓練
 

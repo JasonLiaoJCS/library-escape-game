@@ -69,6 +69,7 @@ class TrainingStatusCallback:
         self._last_flush = 0.0
         self._last_terminal_print = 0.0
         self._last_write_warning = 0.0
+        self.last_payload: dict | None = None
 
     def _warn_write_failure(self, path: Path) -> None:
         now = time.perf_counter()
@@ -123,6 +124,7 @@ class TrainingStatusCallback:
 
     def _flush(self, callback, done: bool = False) -> None:
         payload = self._build_payload(callback, done=done)
+        self.last_payload = payload
         if not _write_json_atomic(self.progress_path, payload):
             self._warn_write_failure(self.progress_path)
         if not _append_jsonl(self.history_path, payload):
