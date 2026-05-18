@@ -202,6 +202,76 @@ def _base_selfplay_round_timesteps(train_cfg: dict) -> int:
     return _scaled_timesteps(base_timesteps, enemy_multiplier) + _scaled_timesteps(base_timesteps, player_multiplier)
 
 
+def _latest_round_dir_with_models(run_dir: Path, role: str) -> Path | None:
+    role_root = run_dir / role
+    if not role_root.exists() or not role_root.is_dir():
+        return None
+
+    candidates: list[tuple[int, float, Path]] = []
+    for child in role_root.iterdir():
+        if not child.is_dir() or not child.name.startswith("round_"):
+            continue
+        suffix = child.name.split("round_", 1)[-1]
+        try:
+            round_idx = int(suffix)
+        except ValueError:
+            continue
+        models_dir = child / "models"
+        if not models_dir.exists() or not models_dir.is_dir():
+            continue
+        has_zip = any(p.suffix == ".zip" for p in models_dir.iterdir() if p.is_file())
+        if not has_zip:
+            continue
+        candidates.append((round_idx, child.stat().st_mtime, child))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2].name), reverse=True)
+    return candidates[0][2]
+
+
+def _resolve_model_from_round_dir(round_dir: Path, role: str) -> Path | None:
+    models_dir = round_dir / "models"
+    if not models_dir.exists() or not models_dir.is_dir():
+        return None
+
+    preferred_prefix = f"{role}_round_"
+    preferred_latest = sorted(
+        [
+            p
+            for p in models_dir.iterdir()
+            if p.is_file() and p.suffix == ".zip" and p.name.startswith(preferred_prefix) and p.name.endswith("_latest.zip")
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if preferred_latest:
+        return preferred_latest[0].resolve()
+
+    best_model = models_dir / "best_model.zip"
+    if best_model.exists():
+        return best_model.resolve()
+
+    all_zips = sorted(
+        [p for p in models_dir.iterdir() if p.is_file() and p.suffix == ".zip"],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if all_zips:
+        return all_zips[0].resolve()
+
+    return None
+
+
+def _resolve_models_from_run_artifacts(run_dir: Path) -> tuple[Path | None, Path | None]:
+    enemy_round_dir = _latest_round_dir_with_models(run_dir, "enemy")
+    player_round_dir = _latest_round_dir_with_models(run_dir, "player")
+    enemy_model = _resolve_model_from_round_dir(enemy_round_dir, "enemy") if enemy_round_dir else None
+    player_model = _resolve_model_from_round_dir(player_round_dir, "player") if player_round_dir else None
+    return enemy_model, player_model
+
+
 def _resolve_resume_selfplay_models(args: argparse.Namespace) -> tuple[Path | None, Path | None, Path | None]:
     resume_run_dir = resolve_repo_path(args.resume_run) if args.resume_run else None
     resume_enemy_model = resolve_repo_path(args.resume_enemy) if args.resume_enemy else None
@@ -210,12 +280,43 @@ def _resolve_resume_selfplay_models(args: argparse.Namespace) -> tuple[Path | No
     if resume_run_dir is not None:
         summary_path = resume_run_dir / "training_summary.json"
         if not summary_path.exists():
-            raise FileNotFoundError(f"Resume run summary not found: {summary_path}")
-        summary = read_json(summary_path)
-        if resume_enemy_model is None and summary.get("final_enemy_model"):
-            resume_enemy_model = resolve_repo_path(summary["final_enemy_model"])
-        if resume_player_model is None and summary.get("final_player_model"):
-            resume_player_model = resolve_repo_path(summary["final_player_model"])
+            # Allow passing a self-play game-mode root directory (for example,
+            # checkpoints/selfplay/escape) by auto-selecting the latest run
+            # that has a training summary.
+            candidate_runs = []
+            if resume_run_dir.exists() and resume_run_dir.is_dir():
+                for child in resume_run_dir.iterdir():
+                    child_summary = child / "training_summary.json"
+                    if child.is_dir() and child_summary.exists():
+                        candidate_runs.append((child_summary.stat().st_mtime, child))
+            if candidate_runs:
+                _, latest_run = max(candidate_runs, key=lambda item: (item[0], item[1].name))
+                resume_run_dir = latest_run
+                summary_path = resume_run_dir / "training_summary.json"
+            else:
+                recovered_enemy, recovered_player = _resolve_models_from_run_artifacts(resume_run_dir)
+                if resume_enemy_model is None:
+                    resume_enemy_model = recovered_enemy
+                if resume_player_model is None:
+                    resume_player_model = recovered_player
+                if resume_enemy_model is None and resume_player_model is None:
+                    raise FileNotFoundError(
+                        "Resume run summary not found and no recoverable checkpoints found "
+                        f"under run directory: {resume_run_dir}"
+                    )
+        if summary_path.exists():
+            summary = read_json(summary_path)
+            if resume_enemy_model is None and summary.get("final_enemy_model"):
+                resume_enemy_model = resolve_repo_path(summary["final_enemy_model"])
+            if resume_player_model is None and summary.get("final_player_model"):
+                resume_player_model = resolve_repo_path(summary["final_player_model"])
+
+        if resume_enemy_model is None or resume_player_model is None:
+            recovered_enemy, recovered_player = _resolve_models_from_run_artifacts(resume_run_dir)
+            if resume_enemy_model is None:
+                resume_enemy_model = recovered_enemy
+            if resume_player_model is None:
+                resume_player_model = recovered_player
 
     for label, model_path in (("enemy", resume_enemy_model), ("player", resume_player_model)):
         if model_path is not None and not model_path.exists():

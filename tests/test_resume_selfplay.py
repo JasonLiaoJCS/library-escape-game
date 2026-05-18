@@ -42,6 +42,80 @@ def test_resolve_resume_selfplay_models_from_run_summary(tmp_path: Path):
     assert resolved_player == player_model.resolve()
 
 
+def test_resolve_resume_selfplay_models_from_game_mode_root(tmp_path: Path):
+    run_root = tmp_path / "escape"
+    run_root.mkdir()
+
+    old_enemy_model = tmp_path / "enemy_old.zip"
+    old_player_model = tmp_path / "player_old.zip"
+    old_enemy_model.write_bytes(b"old")
+    old_player_model.write_bytes(b"old")
+    old_run_dir = run_root / "selfplay_20260424_175841"
+    old_run_dir.mkdir()
+    (old_run_dir / "training_summary.json").write_text(
+        json.dumps(
+            {
+                "final_enemy_model": str(old_enemy_model),
+                "final_player_model": str(old_player_model),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    new_enemy_model = tmp_path / "enemy_new.zip"
+    new_player_model = tmp_path / "player_new.zip"
+    new_enemy_model.write_bytes(b"new")
+    new_player_model.write_bytes(b"new")
+    new_run_dir = run_root / "selfplay_20260425_215517"
+    new_run_dir.mkdir()
+    (new_run_dir / "training_summary.json").write_text(
+        json.dumps(
+            {
+                "final_enemy_model": str(new_enemy_model),
+                "final_player_model": str(new_player_model),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = argparse.Namespace(
+        resume_run=str(run_root),
+        resume_enemy=None,
+        resume_player=None,
+    )
+
+    resolved_run, resolved_enemy, resolved_player = _resolve_resume_selfplay_models(args)
+
+    assert resolved_run == new_run_dir.resolve()
+    assert resolved_enemy == new_enemy_model.resolve()
+    assert resolved_player == new_player_model.resolve()
+
+
+def test_resolve_resume_selfplay_models_without_top_level_summary(tmp_path: Path):
+    run_dir = tmp_path / "selfplay_run"
+    enemy_models = run_dir / "enemy" / "round_08" / "models"
+    player_models = run_dir / "player" / "round_07" / "models"
+    enemy_models.mkdir(parents=True)
+    player_models.mkdir(parents=True)
+
+    enemy_latest = enemy_models / "enemy_round_08_latest.zip"
+    player_latest = player_models / "player_round_07_latest.zip"
+    enemy_latest.write_bytes(b"enemy")
+    player_latest.write_bytes(b"player")
+
+    args = argparse.Namespace(
+        resume_run=str(run_dir),
+        resume_enemy=None,
+        resume_player=None,
+    )
+
+    resolved_run, resolved_enemy, resolved_player = _resolve_resume_selfplay_models(args)
+
+    assert resolved_run == run_dir.resolve()
+    assert resolved_enemy == enemy_latest.resolve()
+    assert resolved_player == player_latest.resolve()
+
+
 def test_selfplay_timestep_plan_defaults_to_more_player_training():
     train_cfg = {
         "timesteps_per_round": 1000,
