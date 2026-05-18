@@ -4,6 +4,8 @@
 
 本報告把目前 `Library Escape` 的 Python 遊戲、pygame 顯示、Gymnasium 強化學習環境、PPO/MaskablePPO 訓練、self-play、reward shaping、GUI 與迭代歷程整理成一份完整說明。寫法刻意用比較白話的方式，讓第一次接觸 Python 遊戲或強化學習的人，也能從專案架構一路看到訓練設計。
 
+這份報告的主軸不是單純展示「我做了一個遊戲」，而是說明我如何把一個有規則、有畫面、有勝負條件的遊戲，逐步整理成一個 AI 能反覆嘗試、犯錯、被評估、再修正的實驗系統。整個專題最重要的故事，是從一開始 AI 只會停住、亂轉、撞牆，到後來玩家會收集、逃跑、利用道具，敵人會追擊、守目標、切出口路線；這個變化不是靠手寫固定路線，而是靠 observation、reward、action mask、物理限制、self-play 與大量訓練共同形成。
+
 ## 摘要
 
 `Library Escape` 是一個以圖書館為場景的 2D 潛行與對抗遊戲。玩家需要在有限時間內收集目標、躲避敵人視野，並在特定模式中完成逃脫；敵人則需要巡邏、偵測、追擊或阻止玩家完成任務。本專題的重點不只是完成一個可以操作的遊戲，而是進一步把遊戲改造成一個可以訓練 AI agent 的強化學習環境。
@@ -13,6 +15,23 @@
 本專題最有挑戰的地方在於：強化學習 agent 不一定會照人類直覺「好好玩遊戲」。如果 reward 設計不精準，敵人可能學會原地旋轉刷視野，玩家可能因為怕被扣分而原地不動，兩方 self-play 也可能因為強弱差距太大而失去學習訊號。因此本專題後期的重點，就是透過 reward shaping、action mask、連續時間物理、轉向硬上限、observation 擴充與 self-play curriculum，逐步修正這些問題。
 
 最後完成的系統是一套完整的 Python 強化學習遊戲實驗平台：可以人類遊玩、AI 對戰、單獨訓練玩家或敵人，也可以讓玩家與敵人 self-play 互相進步。這份報告會依照「問題是什麼、程式怎麼設計、RL 怎麼接上去、訓練中遇到什麼問題、後續怎麼修正」的順序說明整個專題。
+
+## 一頁式成果摘要
+
+如果用最短的方式說明本專題的成果，可以整理成下表：
+
+| 面向 | 最終成果 | 代表意義 |
+|---|---|---|
+| 遊戲完成度 | 完成 `Collection` 與 `Escape` 兩種模式，包含地圖、碰撞、視野、道具、勝負條件、HUD 與 replay | 遊戲不是靜態 demo，而是可以正常遊玩與回放的互動系統 |
+| RL 環境 | 支援 Gymnasium 單智能體與 PettingZoo 多智能體介面 | 遊戲能被標準強化學習 library 訓練，不只是人類手動玩 |
+| 訓練演算法 | 使用 PPO / MaskablePPO、VecNormalize、opponent pool、self-play | 模型能從大量互動資料中學習策略，並逐步改善行為 |
+| Reward 設計 | 分別設計 Collection / Escape reward，加入 goal、chase、guard、alignment、anti-exploit | 把「希望 AI 學會的行為」轉成可訓練的數學訊號 |
+| 物理與限制 | 固定物理步長、連續座標、速度上限、轉向上限、action mask | 避免 AI 利用不自然操作，例如原地爆轉或反覆撞牆 |
+| 長時間訓練 | 保留約 `186,885,000` timesteps 的 self-play 紀錄，約 `72.1` 天 aggregate AI 模擬時間 | 後期成果不是單次偶然，而是大量訓練後的行為累積 |
+| 數據佐證 | TensorBoard 顯示玩家 reward 從長期負值逐步轉正，敵人 reward 同時維持高檔 | 影片看到的進步能被訓練數據支持 |
+| 操作工具 | GUI、TensorBoard、Elo、Replay、checkpoint、resume | 訓練流程可以被啟動、觀察、比較、回復與展示 |
+
+這份專題的核心成就，是把「遊戲設計」、「Python 工程」、「強化學習演算法」和「實驗分析工具」整合在一起。換句話說，最後交出的不是單一模型，也不是單一遊戲畫面，而是一個完整的 AI 訓練平台。
 
 ## 關鍵字
 
@@ -27,6 +46,18 @@ Python、pygame、Gymnasium、PettingZoo、Stable-Baselines3、PPO、MaskablePPO
 如果想看技術實作，可以看第 4 到第 13 章。這些章節說明 pygame 遊戲 loop、連續時間物理、Gymnasium API、action space、observation space、reward 設計、硬性物理限制、CUDA/GPU 與訓練流程。
 
 如果想看專題成果與迭代，可以看第 14 到第 23 章。這些章節整理 GUI、TensorBoard、Elo、replay、每一版修改的原因、訓練改善策略、限制、未來工作、心得反思與總結。
+
+## 報告主軸
+
+整份報告可以看成四個階段。
+
+第一階段是「把遊戲做成穩定的世界」。在這個階段，重點是地圖、角色、碰撞、視野、道具與勝負條件。這些看起來是遊戲功能，但對 RL 來說就是環境的 transition function。如果世界本身不穩，agent 學到的行為也會不穩。
+
+第二階段是「把世界翻譯成 RL 看得懂的格式」。這包含 action space、observation space、reward、terminated/truncated、reset/step API。這一步最關鍵，因為 agent 不會看到整個遊戲原始碼，它只會看到向量、動作與 reward。
+
+第三階段是「修正 AI 學歪的地方」。這是本專題最有故事性的部分。當 AI 原地不動，代表 reward 太稀疏或 idle penalty 不夠；當 AI 原地爆轉，代表 visibility reward 或轉向規則被利用；當敵人太強，代表玩家需要更多訓練時間與更完整 observation。每一次奇怪行為，最後都變成下一次工程改版的依據。
+
+第四階段是「讓訓練可以被觀察與證明」。只看單場影片不夠，只看 reward 曲線也不夠。因此本專題同時使用 TensorBoard、replay、Elo、checkpoint、GUI 與測試，讓模型的進步可以被觀察、被比較，也能被報告中的數據佐證。
 
 ## 目錄
 
@@ -201,6 +232,21 @@ Python、pygame、Gymnasium、PettingZoo、Stable-Baselines3、PPO、MaskablePPO
 | 可操作性 | 使用者是否能不用記大量指令就啟動訓練與檢查結果 | GUI、preset、run summary、leaderboard |
 
 這樣做的好處是，每個工程決策都有可檢查的目的。例如加入轉向速度上限，不只是讓畫面比較自然，也是為了避免敵人用不合理的高速旋轉刷視野；加入 GUI，不只是讓介面漂亮，而是讓訓練、續訓、觀察與比較可以變成可重複的流程。換句話說，本專題把「遊戲不好訓練」拆成一系列可以被程式處理的小問題，再逐一建立工具解決。
+
+### 1.5 核心假設
+
+本專題背後有一個核心假設：如果一個遊戲環境能清楚定義「狀態、動作、獎勵、限制與評估方法」，那麼即使一開始 AI 什麼都不會，也能透過大量互動逐漸形成可觀察的策略。
+
+這個假設可以拆成四個子問題：
+
+| 子問題 | 本專題如何回答 |
+|---|---|
+| AI 是否看得到足夠資訊？ | 透過 observation space 提供玩家、敵人、目標、出口、道具、牆面 ray、進度與模式資訊 |
+| AI 是否能做出合理動作？ | 使用 9 方向離散 action，並用 action mask 排除撞牆或不合理 no-op |
+| AI 是否知道什麼行為值得學？ | 用 terminal reward、event reward、progress reward、alignment reward 與 anti-exploit penalty 組合 |
+| AI 是否真的變好？ | 用 TensorBoard、eval、replay、Elo、checkpoint 影片與測試共同驗證 |
+
+因此，這份專題不是只在問「PPO 能不能跑」，而是在問：「我能不能把一個遊戲設計成 AI 可以學、可以比較、可以修正的問題？」後面的章節都是圍繞這個核心假設展開。
 
 ## 2. 遊戲規則
 
@@ -1592,6 +1638,152 @@ checkpoints/selfplay/escape/selfplay_YYYYMMDD_HHMMSS/
 
 在實驗紀錄上，每次調整 reward 或物理限制後，都應該保留「修改原因、修改項目、預期改善、實際觀察」四種資訊。例如調高玩家 `goal_progress` 是希望玩家更願意往目標移動；加入 `player_turn` penalty 是希望減少原地轉圈；增加玩家 self-play timesteps 是因為玩家任務鏈更長，需要更多互動資料。這讓每一次改版不只是憑感覺調數字，而是有問題意識、有假設、有驗證。
 
+### 13.12 實際訓練硬體與累積模擬量
+
+後期正式訓練主要使用 `overnight_4090` preset。這個 preset 是為了長時間 self-play 設計的，不是短測試用的設定。它的 self-play 設定如下：
+
+| 項目 | 設定 |
+|---|---:|
+| self-play rounds | `15` |
+| 每輪基準 timesteps | `600,000` |
+| 平行環境數 | `16` |
+| `n_steps` | `2048` |
+| batch size | `4096` |
+| eval / checkpoint 間隔 | `32,768` timesteps |
+| opponent pool size | `20` |
+| learning rate schedule | `0.00025 -> 0.00005` |
+| clip range schedule | `0.20 -> 0.10` |
+| entropy coefficient schedule | `0.024 -> 0.006`（Escape） |
+
+硬體方面，訓練紀錄與系統資訊顯示：
+
+| 硬體 / 軟體 | 內容 |
+|---|---|
+| CPU | Intel Core Ultra 7 265K，20 logical CPUs |
+| RAM | 約 `61 GiB` |
+| GPU | NVIDIA GeForce RTX 5080 |
+| GPU memory | 約 `16 GB` |
+| NVIDIA Driver | `580.126.09` |
+| CUDA | `13.0` |
+| PyTorch | `2.11.0+cu130` |
+| 訓練 device | `cuda` |
+
+這裡要特別說明「AI 世界裡過了多久」的算法。環境設定為 `physics_hz = 120`、`rl_frame_skip = 4`，所以一次 RL `env.step()` 代表：
+
+```text
+4 / 120 = 0.0333 秒
+```
+
+也就是說：
+
+```text
+AI 累積模擬秒數 = total_timesteps * 0.0333
+               = total_timesteps / 30
+```
+
+因為訓練同時開 `16` 個平行環境，所以可以同時理解成兩種時間：
+
+1. aggregate simulated time：所有平行環境加總後，AI 累積看過多少遊戲秒數。
+2. per-env equivalent time：如果只看單一環境，大概等於跑了多久的遊戲時間。
+
+以完整的 `overnight_4090` self-play run 為例，總 timesteps 是 `22,488,000`：
+
+```text
+22,488,000 / 30 = 749,600 秒
+749,600 秒 = 約 208.2 小時 = 約 8.7 天 aggregate simulated time
+208.2 小時 / 16 個平行環境 = 約 13.0 小時 per-env equivalent time
+```
+
+所以一個完整 run 雖然實際牆鐘時間大約 28 到 38 小時左右，但因為有 16 個平行環境同時跑，模型實際上等於看過非常大量的遊戲經驗。
+
+從目前保留的 `checkpoints/selfplay/escape` 紀錄來看，後期主要訓練如下：
+
+| run | phase | n_envs | timesteps | 敵人步數 | 玩家步數 | aggregate AI 時間 | 牆鐘時間 | 平均 FPS | 最後敵人 mean reward | 最後玩家 mean reward |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `selfplay_20260424_175841` | `1+0` | 16 | 450,000 | 450,000 | 0 | 4.2 小時 | 0.4 小時 | 290.0 | 340.8 | n/a |
+| `selfplay_20260425_020347` | `8+7` | 16 | 10,729,500 | 2,812,500 | 7,917,000 | 99.3 小時 | 20.2 小時 | 147.2 | 453.9 | -260.6 |
+| `selfplay_20260425_222355` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 28.1 小時 | 222.7 | 533.0 | -131.4 |
+| `selfplay_20260427_152727` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 28.9 小時 | 216.4 | 573.4 | -115.2 |
+| `selfplay_20260428_205119` | `13+12` | 16 | 18,289,500 | 4,500,000 | 13,789,500 | 169.3 小時 | 25.3 小時 | 200.6 | 592.1 | -116.6 |
+| `selfplay_20260429_224001` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 36.2 小時 | 172.6 | 547.9 | 35.9 |
+| `selfplay_20260501_143335` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 37.8 小時 | 165.2 | 564.4 | 117.8 |
+| `selfplay_20260503_055435` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 82.3 小時 | 75.9 | 513.4 | 119.7 |
+| `selfplay_20260506_162056` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 37.5 小時 | 166.5 | 558.5 | 139.9 |
+| `selfplay_20260508_162745` | `15+15` | 16 | 22,488,000 | 5,175,000 | 17,313,000 | 208.2 小時 | 37.3 小時 | 167.6 | 546.1 | 108.7 |
+
+這些 run 加總約 `186,885,000` timesteps。換算成 AI 世界的 aggregate simulated time，大約是 `1,730` 小時，也就是約 `72.1` 天的遊戲經驗。若用 16 個平行環境平均攤開，約等於每個環境累積 `108.2` 小時的遊戲時間。這也解釋了為什麼後期模型的行為開始從「會動」變成「會選路線、會搶物品、會守出口」：不是單純改一個 reward 就突然變聰明，而是在 reward 穩定後，真的餵進了大量互動資料。
+
+表格中也可以看到玩家步數遠高於敵人步數。完整 run 中敵人約 `5,175,000` timesteps，玩家約 `17,313,000` timesteps，比例大約是 `1 : 3.35`。這是刻意設計的，因為玩家任務比較長，需要先收集 note，再判斷敵人位置，再找路線，最後才逃向出口。敵人只要壓迫、追擊、守目標，學習鏈比較短。因此 self-play 不是平均分配訓練時間，而是把更多時間給弱勢且任務較長的玩家。
+
+### 13.13 TensorBoard 數值如何佐證訓練有效
+
+本專題不只用影片判斷模型有沒有變強，也會看 TensorBoard scalar。TensorBoard 的價值是把訓練過程變成曲線，讓我可以把「影片中看到的行為」和「訓練數值」互相對照。
+
+常用 scalar 的意義如下：
+
+| TensorBoard scalar | 意義 | 在本專題中的解讀 |
+|---|---|---|
+| `rollout/ep_rew_mean` | 訓練過程中最近回合的平均 reward | 最直接反映該角色在訓練對手下是否越來越會拿分 |
+| `eval/mean_reward` | 固定評估時的平均 reward | 用來檢查模型不是只在訓練 rollout 中變好 |
+| `eval/mean_ep_length` | 評估回合平均長度 | 玩家若能活更久、拖到收集或逃脫階段，通常會上升 |
+| `rollout/ep_len_mean` | 訓練回合平均長度 | 可觀察是否很快被抓、或是否能進入長時間對抗 |
+| `time/fps` | 每秒處理多少 timesteps | 判斷硬體訓練效率與長訓練成本 |
+| `train/explained_variance` | value function 對 return 的解釋程度 | 越接近 `1`，通常代表 critic 對 reward 結構掌握較好 |
+| `train/approx_kl`、`train/clip_fraction` | PPO 更新幅度 | 過大可能代表 policy 更新不穩，後期大多維持在小幅更新 |
+
+後期幾個代表性 checkpoint 的 TensorBoard 數值如下。表中的 `rollout first -> last` 是該 run 最後一輪 phase 內，`rollout/ep_rew_mean` 從第一個 TensorBoard 點到最後一個 TensorBoard 點的變化；`eval max` 則是該 phase 中 `eval/mean_reward` 的最高值。
+
+| run | role | final round | rollout first -> last | eval max | eval last | eval ep length last | explained variance last |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `selfplay_20260424_175841` | enemy | 1 | `102.0 -> 340.8` | `386.4` | `337.1` | `154.0` | `0.8` |
+| `selfplay_20260424_175841` | player | 1 | `-331.3 -> -331.3` | `-302.2` | `-302.2` | `339.5` | n/a |
+| `selfplay_20260425_020347` | enemy | 8 | `422.3 -> 453.9` | `379.8` | `356.5` | `149.9` | `0.8` |
+| `selfplay_20260425_020347` | player | 8 | `-262.0 -> -213.1` | `-73.5` | `-169.8` | `1321.1` | `0.7` |
+| `selfplay_20260425_222355` | enemy | 15 | `534.4 -> 533.0` | `369.9` | `369.1` | `373.0` | `0.7` |
+| `selfplay_20260425_222355` | player | 15 | `-128.9 -> -131.4` | `-74.1` | `-178.0` | `1259.8` | `1.0` |
+| `selfplay_20260429_224001` | enemy | 15 | `495.1 -> 547.9` | `376.8` | `372.1` | `133.9` | `0.6` |
+| `selfplay_20260429_224001` | player | 15 | `-83.7 -> 35.9` | `161.9` | `-66.3` | `1195.4` | `0.9` |
+| `selfplay_20260501_143335` | enemy | 15 | `525.1 -> 564.4` | `383.5` | `383.5` | `163.1` | `0.7` |
+| `selfplay_20260501_143335` | player | 15 | `14.6 -> 117.8` | `259.9` | `-135.1` | `926.6` | `0.9` |
+| `selfplay_20260503_055435` | enemy | 15 | `548.9 -> 513.4` | `379.7` | `374.1` | `138.2` | `0.8` |
+| `selfplay_20260503_055435` | player | 15 | `-12.7 -> 119.7` | `121.2` | `-72.2` | `1513.4` | `0.9` |
+| `selfplay_20260506_162056` | enemy | 15 | `550.5 -> 558.5` | `378.8` | `372.6` | `131.6` | `0.6` |
+| `selfplay_20260506_162056` | player | 15 | `-58.3 -> 139.9` | `242.1` | `-34.6` | `1546.6` | `0.9` |
+| `selfplay_20260508_162745` | enemy | 15 | `516.0 -> 546.1` | `375.4` | `369.5` | `135.2` | `0.8` |
+| `selfplay_20260508_162745` | player | 15 | `-4.5 -> 108.7` | `153.0` | `7.0` | `1657.2` | `0.9` |
+
+這張表可以支撐幾個重要結論。
+
+第一，早期玩家確實很弱，不只是影片看起來弱。`selfplay_20260424_175841` 中 enemy 的 `rollout/ep_rew_mean` 從 `102.0` 上升到 `340.8`，但 player 仍維持在 `-331.3`，`eval/mean_reward` 也是 `-302.2`。這和「玩家敵人原地擺爛、玩家沒有有效策略」的影片觀察一致，也說明當時玩家 reward、observation 與訓練時間都還不足。
+
+第二，04-25 附近 reward 與 self-play balance 調整後，玩家雖然還常輸，但已經從完全負向行為開始往有效行為移動。`selfplay_20260425_020347` 的 player rollout 從 `-262.0` 改善到 `-213.1`，`eval max` 也到 `-73.5`；這代表玩家仍不穩，但已經比 04-24 的 `-331.3` 好。這也解釋了為什麼後續要提高玩家 reward、增加玩家訓練時間，而不是只繼續加強敵人。
+
+第三，04-29 是明顯轉折點。`selfplay_20260429_224001` 的 player rollout 從 `-83.7` 上升到 `35.9`，首次在最後一輪訓練 mean reward 轉正，`eval max` 也達到 `161.9`。這和影片中「玩家開始會收集逃跑前所需要素、會閃避敵人」非常吻合。數值上 player reward 轉正，行為上則表現為不再只是逃跑或亂走，而是開始把收集與生存結合。
+
+第四，05-01 到 05-06 的玩家能力進一步提高。`selfplay_20260501_143335` 的 player rollout 從 `14.6` 到 `117.8`，`eval max` 達到 `259.9`；`selfplay_20260506_162056` 則從 `-58.3` 到 `139.9`，`eval max` 達到 `242.1`。這可以對應到影片中「玩家首度獲勝」、「會拿六本書後逃跑」、「減少無效移動」、「開始利用道具」等現象。這些不是單場偶然，而是 TensorBoard 中多個 run 都出現的玩家 reward 改善。
+
+第五，敵人沒有因為玩家變強就崩掉。後期 enemy rollout 大多維持在 `513` 到 `592` 之間，eval max 也大約落在 `375` 到 `383`。這代表敵人仍然保持很強的追擊與防守能力，所以後期對局不是玩家單方面變強，而是雙方都在高強度對抗下互相拉扯。這正好對應影片中看到的「敵人包抄更積極」、「玩家完成 note 後敵人開始守出口」。
+
+第六，後期玩家的 `train/explained_variance` 多數約 `0.9`，代表 critic 對 reward/return 的預測已經相對穩定。這不等於策略完美，但表示模型不再像早期那樣完全摸不到 reward 結構。也因此，後期看到玩家減少亂走、能朝目標推進、能延長生存時間，是有數值基礎的。
+
+需要注意的是，`eval/mean_reward` 有時最後一個點會比最高值低，例如 `selfplay_20260501_143335` 的 player `eval max = 259.9`，但最後 `eval last = -135.1`。這不代表訓練失敗，而是 self-play 評估對手、seed、起點和隨機化都會影響單次 eval。真正判斷時不能只看最後一個點，而要同時看 rollout 趨勢、eval best、episode length、replay 行為與 Elo/對戰結果。這也是本專題為什麼要同時保留 TensorBoard、replay、checkpoint 和影片觀察。
+
+### 13.14 綜合成果判讀
+
+把影片、TensorBoard、checkpoint 與 Git commit 放在一起看，可以得到比較完整的結論：
+
+| 證據來源 | 看到的現象 | 對專題的意義 |
+|---|---|---|
+| 影片觀察 | AI 從原地不動、原地爆轉，進步到會追擊、收集、閃避、守出口 | 行為層面確實有從無策略到有策略的變化 |
+| TensorBoard | 玩家 rollout reward 從長期負值逐步轉正，敵人 reward 維持高檔 | 數值層面顯示玩家不是偶然成功，而是平均表現改善 |
+| Checkpoint 時間線 | 04-25 後 reward 穩定，04-29 後主要靠長時間訓練累積效果 | 說明後期成果來自穩定 reward 下的大量 self-play |
+| Git commit | 04-19 到 04-25 集中修改 reward、turn limit、action mask、adaptive timesteps | 可以追溯每一次訓練問題對應到哪一類程式修改 |
+| 測試 | reward、env API、action mask、world rules、GUI、resume 都有測試 | 確保不是只把數字調高，而是整個 pipeline 可維護 |
+
+這些證據互相補足。影片讓我看到具體行為，TensorBoard 讓我確認平均趨勢，checkpoint 讓我能回到特定版本比較，Git commit 讓我知道每次改動的原因，測試則避免改 reward 時破壞其他系統。這種多證據判讀方式，也讓本專題比較接近真正的實驗流程：不是只說「我覺得 AI 變強」，而是能說明「我在哪個版本觀察到什麼問題、怎麼修改、修改後數字和行為如何變化」。
+
+從最終結果來看，這套方法證明了三件事。第一，reward shaping 和硬性物理限制必須一起做，單靠懲罰很難完全修正爆轉或停住。第二，玩家任務比較長，因此 self-play 必須給玩家更多訓練時間，否則敵人會太快壓過玩家。第三，當 reward 穩定後，長時間訓練會讓策略逐漸從「局部反應」變成「階段性策略」，例如先搶 note、再避開敵人、最後衝出口，或是在玩家完成目標後轉向出口防守。
+
 ## 14. GUI 圖形化介面
 
 GUI 主程式在 [`library_escape/gui/app.py`](../library_escape/gui/app.py)，啟動方式：
@@ -1868,6 +2060,113 @@ commit `9e75ade` 加入玩家固定 collectible slots，讓玩家能看到所有
 
 這讓 GUI 或手動續訓更不容易因為選錯資料夾而失敗。
 
+### 16.15 影片與 checkpoint 效果觀察
+
+除了 Git commit 與訓練 log，本專題也透過每個 checkpoint 的影片觀察模型行為。這一節把影片效果、對應時間、可能原因與後續調整整理在一起。早期 04-18 到 04-21 的影片在目前 checkpoint artifact 中沒有完整保留，因此分析主要依照影片觀察與 Git commit；04-24 之後則能對應到 `checkpoints/selfplay/escape/` 中的 run summary、progress log 與 checkpoint。
+
+| 影片時間 / checkpoint | 觀察到的效果 | 當時可能原因 | 後續調整與結果 |
+|---|---|---|---|
+| `04-18 03:56:06` RL 環境引入初版本 | RL API 剛接上，重點是能 reset、step、回傳 observation/reward/action。 | 此階段主要是在確認 Gymnasium/PettingZoo 介面能工作，策略還沒有足夠訓練資料。 | 先把遊戲包成可訓練環境，建立後續 PPO/MaskablePPO、checkpoint、replay 的基礎。 |
+| `04-19 00:53:02` 玩家敵人原地擺爛 | 玩家與敵人都容易停住，缺少明確行為。 | reward 太稀疏，terminal reward 很久才出現；idle/no-progress penalty 太弱；agent 不知道移動會帶來什麼短期好處。 | 後續在 `45b2e6e` 加入 dense chase、goal progress、evade signal，讓「接近目標」、「追近玩家」、「遠離威脅」都有中途訊號。 |
+| `04-19 14:34:01` 玩家敵人原地爆轉 | 角色會原地快速轉向，看起來像在刷偵測或刷方向。 | 當時 visibility 類 reward 相對太有吸引力，而環境還沒有明確記錄 turn-in-place、reverse turn，也沒有足夠硬性轉向上限。 | 先用 anti-exploit 與 movement shaping 處理，後來在 04-20 正式加入轉向速度上限、turn penalty、reverse penalty，才真正壓住爆轉。 |
+| `04-19 22:17:19` 仍會爆轉，但偶爾有連續移動；支援敵人固定巡航 | dense reward 開始讓模型移動，但原地轉向仍明顯；支援敵人依規則巡邏。 | chase/goal progress 已經提供方向，但 visibility reward、站立懲罰、oscillation threshold 仍不夠精準；支援敵人不是 RL policy，而是 rule-based 壓力來源。 | 04-20 的重構把 visibility bonus 降低，讓 chase progress、objective guard、exit guard 成為主訊號，並把 oscillation threshold 調到真實 macro-step 尺度。 |
+| `04-19 22:21:08` 效果顯著提升，玩家開始逃跑，敵人開始追擊 | 模型已經不只是隨機動，玩家知道要遠離敵人，敵人知道要靠近玩家。 | dense shaping 開始生效：敵人有追近玩家的 reward，玩家有目標推進與逃離威脅的 reward。 | 這證明 reward 方向是對的，但還沒有解決高速轉向，所以後續不只調 reward，也加入物理硬限制。 |
+| `04-21 03:27:30` 加入最大轉頭速度後不再爆轉；敵人變強，常把玩家逼到牆角 | 爆轉消失，敵人追擊穩定且壓迫性大幅提高，玩家常被逼入牆角。 | 04-20 後 `player_max_turn_rate_deg_per_sec`、enemy `max_turn_rate`、turn penalty、alignment reward 生效。敵人的 chase/guard reward 比較容易學，任務鏈短，所以成長快。 | 這個階段確認硬限制有效，但也暴露玩家比敵人難學，因此後續 self-play 開始把更多 timesteps 分配給玩家。 |
+| `04-29 22:15:11` 玩家會收集逃跑所需要素並躲避，但還不太區分必要物品與道具；敵人開始有包抄傾向 | 玩家已能先收集、再逃跑；敵人不只是追，而是開始壓迫路線。 | 04-25 後 reward 大致穩定，開始長時間訓練。此時模型逐漸把 `goal_progress`、`collect_note`、`objective_complete` 與 `exit_guard` 學成可見行為。 | 對應 `selfplay_20260429_224001` 前後，完整 run 約 22.49M timesteps；玩家 mean reward 從前期負值轉到後期正值，代表玩家開始能完成更多有效行為。 |
+| `05-02 22:43:25` 玩家更有策略地撿道具，敵人追擊更積極 | 玩家開始不是只逃，而是會衡量路線與收集；敵人壓迫更強。 | reward 已不再頻繁調整，主要靠大量 self-play 累積。player phase 的訓練步數遠多於 enemy phase，讓玩家逐漸追上敵人。 | 對應 `selfplay_20260501_143335` 訓練中後段，玩家最後 training mean reward 約 `117.8`，比 04-29 更穩。 |
+| `05-02 22:46:26` 玩家首度明顯出現獲勝；收集六本書後逃出，敵人開始守出口 | 玩家與敵人勝率接近，玩家能在閃避下收集六本 note 後逃跑；敵人知道玩家完成目標後要守出口。 | `current_player_goal_position` 會在收集完必要 note 後切到出口；玩家 `goal_progress` 會把策略推向出口；敵人 `exit_guard_progress` / `exit_guard_alignment` 讓敵人學會提前切出口路線。 | 這是很成功的訓練結果，代表 reward 不只讓模型追逐局部分數，而是形成「前期搶目標、後期搶出口」的階段式策略。 |
+| `05-03 02:51:32` 玩家開始撿 exams；敵人包抄更積極，玩家較難獲勝，常 timeout | 玩家意識到 exam 雖不一定是逃脫必要條件，但可以提高分數；敵人協同壓迫使玩家更難完成六本 note。 | Escape reward 中 `collect_exam = 10` 仍是正獎勵，所以玩家會在安全時撿 exam；敵人的 objective guard 和 support shared last-seen 讓包抄更明顯。 | 這顯示 reward 真的影響行為偏好：正向 exam reward 會讓玩家把 exam 視為次要收益，而不是完全忽略。 |
+| `05-06 02:57:54` 玩家減少無效移動，會快速找書並拉開距離；支援敵人有時像暫停 | 玩家更少撞牆或亂轉，會趁敵人視野外拉距離；但支援敵人如果失去共享目標資訊，會回到較保守規則。 | 長訓練讓 action mask、idle/oscillation penalty、goal alignment 的效果更明顯。支援敵人仍是 rule-based，不是完全學習式，因此當 shared last-seen 不足時會看起來比較被動。 | 對應 `selfplay_20260503_055435` 長 run，雖然牆鐘時間拉到 82.3 小時，但累積資料讓玩家行為更乾淨。 |
+| `05-08 03:04:13` 勝率越來越接近 50%，玩家更有意圖地使用道具，敵人包抄更像策略 | 玩家與敵人形成更接近互相制衡的對局；玩家會利用道具提高逃脫率，敵人會從追逐變成路線壓迫。 | self-play 的對手池與 adaptive timesteps 持續讓弱勢方補訓練。玩家 reward 長期低於敵人，所以系統把更多訓練步數給玩家。 | 對應 `selfplay_20260506_162056`，最後玩家 mean reward 約 `139.9`，是目前表格中最高的一批；這也符合影片看到的玩家能力提升。 |
+
+從這張表可以看出一個很清楚的故事：早期問題不是模型太笨，而是環境給它的學習訊號不夠精確。當 reward 太稀疏時，它會停住；當 visibility reward 太好賺時，它會原地爆轉；當沒有轉向硬上限時，它會做出人類玩家不可能做到的高速轉頭；當玩家 reward 不足或訓練時間太短時，敵人會很快壓過玩家。每一個看起來奇怪的行為，其實都是 agent 在目前規則下找到的「合理解」。專題的重點就是不斷把這些合理但不符合遊戲目標的解，改寫成更接近人類理解的策略。
+
+#### 16.15.1 影片現象與 TensorBoard 數值對照
+
+為了避免只用主觀觀察描述模型變好，我把影片中看到的行為和 TensorBoard scalar 對照。這裡最重要的不是單一數字，而是「數字變化方向」是否和影片行為一致。
+
+| 階段 | 影片看到的行為 | TensorBoard / log 佐證 | 為什麼能互相匹配 |
+|---|---|---|---|
+| 早期環境剛接上 | 玩家沒有明確策略，敵人也不穩定 | `selfplay_20260424_175841`：enemy rollout `102.0 -> 340.8`，player rollout 維持 `-331.3`，player eval `-302.2` | 敵人任務較短，所以先學到追擊訊號；玩家任務較長，reward 還不足，數值與影片中的玩家弱勢一致 |
+| 加入 dense reward 後 | 玩家開始移動與逃跑，但仍不穩 | `selfplay_20260425_020347`：player rollout `-262.0 -> -213.1`，eval max `-73.5`，eval episode length `1321.1` | 玩家仍常輸，但已比 `-331.3` 好，而且回合能拉長，對應影片中「開始跑，但還不會完整完成任務」 |
+| reward 穩定後開始長訓練 | 玩家會先收集再躲避，敵人開始有壓迫路線 | `selfplay_20260429_224001`：player rollout `-83.7 -> 35.9`，eval max `161.9`；enemy rollout `495.1 -> 547.9` | 玩家 reward 轉正，表示已能做出收集與生存的有效行為；敵人同時維持高 reward，符合影片中雙方都變強 |
+| 05-02 玩家首度明顯獲勝 | 玩家能拿六本 note 後逃跑，敵人開始守出口 | `selfplay_20260501_143335`：player rollout `14.6 -> 117.8`，eval max `259.9`；enemy eval max `383.5` | 玩家數值大幅改善，代表不是偶然逃出；敵人 eval 也高，表示玩家是在強敵壓力下學會逃脫 |
+| 05-03 至 05-06 | 玩家減少無效移動，開始撿 exam/道具；敵人包抄更強 | `selfplay_20260503_055435`：player rollout `-12.7 -> 119.7`；`selfplay_20260506_162056`：player rollout `-58.3 -> 139.9`，eval max `242.1` | `collect_exam`、`collect_coffee`、`collect_freeze` 仍是正 reward，所以玩家在安全時會撿；player reward 持續上升，對應更有效的移動與收集 |
+| 05-08 後期互相制衡 | 玩家與敵人勝率更接近，敵人包抄像策略而不是單純追逐 | `selfplay_20260508_162745`：player rollout `-4.5 -> 108.7`，最後 eval `7.0`；enemy rollout `516.0 -> 546.1` | 玩家不再長期負 reward，敵人也維持高 reward；雙方不是一邊倒，而是進入更接近 self-play 期待的對抗狀態 |
+
+這些數字也說明為什麼我不能只看影片，也不能只看 TensorBoard。影片能讓我看出「原地爆轉」、「守出口」、「包抄」、「撿 exam」這類具體行為；TensorBoard 則告訴我這些行為是否在多回合平均下真的提高 reward。兩者合在一起，才比較能判斷模型是不是真的學會策略，而不是某一場剛好成功。
+
+從 reward 修改角度看，這些數字也能反推每次修改的必要性。早期 player reward 長期負值，表示玩家沒有足夠正向學習訊號，所以要提高 `collect_note`、`objective_complete_bonus`、`goal_progress_per_unit`，並讓玩家取得更多 training timesteps。早期爆轉問題則代表 visibility 類 reward 太容易被利用，所以後來降低 `primary_visible_per_step`，改用 `chase_progress_per_unit`、`objective_guard_progress_per_unit`、`exit_guard_progress_per_unit` 當主訊號，再加上轉向硬上限和 `turn_in_place` penalty。後期 TensorBoard 顯示玩家 rollout reward 從負值逐步轉正，且敵人 reward 沒有崩掉，這正好說明 reward 修改方向是有效的：它沒有只讓玩家變強，也沒有讓敵人失去能力，而是讓兩邊進入更穩定的競爭。
+
+### 16.16 Reward 穩定後的長時間訓練
+
+從 Git 紀錄來看，reward 與訓練平衡的主要變更集中在幾個時間點：
+
+| 時間 / commit | 修改重點 | 為什麼要改 |
+|---|---|---|
+| `2026-04-19 15:38` `45b2e6e` | 加入 dense chase、goal progress、evade reward 與測試 | 解決原地不動與 reward 太稀疏的問題 |
+| `2026-04-20 07:30` `596d55f` | 重做 Escape reward、降低 visibility 重要性、加強 chase/guard/idle/oscillation、加入轉向限制 | 解決爆轉、站立、刷視野、玩家不推進 |
+| `2026-04-20 19:37` `bfae9e2` | 加入 alignment reward、turn-in-place penalty、reverse turn penalty、細化 action mask | 讓「方向正確的移動」比「原地換方向」更有價值 |
+| `2026-04-25 01:26` `b88dbe8` | 強化玩家 terminal/objective reward，加入 role timestep multipliers 與 adaptive timesteps | 解決敵人學太快、玩家學習鏈太長、self-play 失衡 |
+
+04-25 之後，reward 檔案基本上就進入穩定狀態。後面 04-29、05-01、05-03、05-06、05-08 的進步，主要不是一直改 reward，而是使用穩定 reward 進行大量 self-play。這一點很重要，因為如果 reward 每隔幾小時就改，模型其實一直在追一個會移動的目標，反而很難判斷訓練是否真的改善。04-25 後的策略是：先讓 reward 足夠合理，再把時間交給訓練。
+
+完整 run 的 self-play 運作方式如下：
+
+```text
+第 1 輪 enemy phase:
+  敵人先對 bootstrap 對手訓練
+  bootstrap 對手包含隨機/啟發式玩家
+
+第 1 輪 player phase:
+  玩家拿剛訓練好的敵人當對手
+  玩家開始學怎麼躲、怎麼收集、怎麼逃
+
+第 2 輪以後:
+  敵人拿最新與歷史玩家訓練
+  玩家再拿最新與歷史敵人訓練
+  模型被加入 opponent pool
+  下一輪從 latest/historical pool 抽對手
+```
+
+這種做法的意義是避免只對單一對手過度適應。如果玩家只對最新敵人訓練，可能會學到很窄的破解方式；如果敵人只對最新玩家訓練，也可能只會抓某一種路線。opponent pool 讓模型會遇到最新對手，也會遇到歷史對手，因此策略比較不容易退化。
+
+self-play 的訓練步數不是固定平均分配，而是依 reward 差距調整。基礎設定是：
+
+```text
+base_timesteps_per_round = 600,000
+enemy_multiplier = 0.75
+player_multiplier = 1.45
+```
+
+所以第一輪大約是：
+
+```text
+enemy: 600,000 * 0.75 = 450,000 timesteps
+player: 600,000 * 1.45 = 870,000 timesteps
+```
+
+第二輪開始，如果上一輪 enemy reward 明顯高於 player reward，系統會把訓練時間往玩家傾斜。實際完整 run 中常見的調整結果是：
+
+```text
+enemy_multiplier = 0.5625 -> enemy 337,500 timesteps
+player_multiplier = 1.9575 -> player 1,174,500 timesteps
+```
+
+實作上，程式不是直接去讀 TensorBoard 的圖，而是使用訓練過程中同一批 reward 統計，例如 `training_mean_reward`、`last_mean_reward`、`best_mean_reward`；TensorBoard 則把這些 scalar 視覺化，讓我能從曲線上確認玩家和敵人的強弱差距。也就是說，當敵人已經很強、玩家 reward 仍偏低時，系統會少練一點敵人，多練很多玩家。這正好符合實際觀察：早期敵人很快就能追殺玩家，玩家則需要更長時間才學會先收集、再閃避、最後逃脫。到了 05-02 之後，玩家開始偶爾獲勝；到 05-08，玩家與敵人的勝率逐漸接近，代表 adaptive self-play 的平衡策略開始發揮效果。
+
+從 reward 角度看，這段長訓練讓幾個設計逐漸顯現出來：
+
+1. `goal_progress_per_unit` 和 `goal_alignment_per_step` 讓玩家朝 note 或出口前進，而不是只逃跑。
+2. `collect_note` 與 `objective_complete_bonus` 讓玩家知道六本 note 是主要任務。
+3. `collect_exam`、`collect_coffee`、`collect_freeze` 讓玩家在安全時會考慮額外道具或分數。
+4. `chase_progress_per_unit` 讓敵人不只看見玩家，而是實際縮短距離。
+5. `objective_guard_progress_per_unit` 讓敵人壓迫玩家下一個目標。
+6. `exit_guard_progress_per_unit` 讓敵人在玩家完成 note 後轉向出口防守。
+7. `idle`、`stationary`、`oscillation`、`turn_in_place` penalty 讓原地不動、爆轉、來回抖動不再是划算策略。
+
+因此，05-02 之後看到的「玩家會收集六本書後逃跑」、「敵人知道要守出口」、「玩家開始撿 exams」、「敵人包抄更積極」不是偶然，而是 reward、observation、action mask、物理限制與 self-play 長時間訓練一起作用的結果。
+
 ## 17. 為什麼這樣調整會讓訓練變好
 
 整體來看，訓練變好的原因不是單一參數，而是幾個方向一起改：
@@ -2093,6 +2392,8 @@ python -m library_escape.train.train_enemy --game-mode escape --preset fast --ti
 ## 23. 結論
 
 這個專案最後不是只有一個遊戲，而是一套完整的「可玩、可訓練、可分析」的強化學習實驗環境。從 Python 遊戲核心開始，逐步加入 pygame 顯示、Gymnasium/PettingZoo API、PPO/MaskablePPO、reward shaping、action mask、連續時間物理、轉向限制、self-play、GUI、TensorBoard、Elo 與 replay。
+
+回頭看整個開發過程，最有價值的不是某一次模型突然變強，而是每一次模型出現奇怪行為時，我都能把它轉成可以處理的工程問題。玩家站著不動，代表 reward 與 no-progress penalty 要重新思考；敵人原地爆轉，代表 visibility reward 和轉向限制要調整；玩家長期輸給敵人，代表 observation、目標 reward 和訓練時間配置要補強；後期模型行為變得更像策略，則需要用 TensorBoard、replay 和 checkpoint 去確認這不是單場偶然。這條路線讓專題從「做出功能」進一步走到「能解釋為什麼會變好」。
 
 最重要的學習是：RL 專案的成敗不只在演算法，也在環境設計。Observation 是否足夠、action 是否合理、reward 是否容易被鑽漏洞、物理限制是否穩定、訓練結果是否能觀察，這些都會直接影響 agent 最後學到什麼行為。本專案透過多次迭代，把原本容易出現的站著不動、原地旋轉、只刷視野、玩家不敢推進、自我對戰失衡等問題，一步一步用環境設計、reward 調整與訓練流程改善掉。
 
